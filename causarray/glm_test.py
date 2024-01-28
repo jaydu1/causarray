@@ -41,7 +41,7 @@ def fit_glm(Y, X, A, family='gaussian', disp_glm=None, return_df=False, impute=F
     tvals = []
     pvals = []
     resid_response = []
-    if impute:
+    if impute is not False:
         Yhat_0 = []
         Yhat_1 = []
     else:
@@ -53,9 +53,14 @@ def fit_glm(Y, X, A, family='gaussian', disp_glm=None, return_df=False, impute=F
         offsets = None
     
     def append_values(impute, Y, j, X, A, offsets, mod=None):
-        if impute:
-            Yhat_0.append(mod.predict(np.c_[X[:,:-1], np.zeros_like(A)], offset=offsets) if mod else np.full(Y.shape[0], np.mean(Y[:,j])))
-            Yhat_1.append(mod.predict(np.c_[X[:,:-1], np.ones_like(A)], offset=offsets) if mod else np.full(Y.shape[0], np.mean(Y[:,j])))
+        if impute is not False:
+            if isinstance(impute, np.ndarray):
+                X_test = impute
+            else:
+                X_test = X[:,:-1]
+            Y_null = np.full(X_test.shape[0], np.mean(Y[:,j]))
+            Yhat_0.append(mod.predict(np.c_[X_test, np.zeros((X_test.shape[0],1))], offset=offsets) if mod else Y_null)
+            Yhat_1.append(mod.predict(np.c_[X_test, np.zeros((X_test.shape[0],1))], offset=offsets) if mod else Y_null)
         else:
             Yhat.append(mod.predict(X, offset=offsets) if mod else np.full(Y.shape[0], np.mean(Y[:,j])))
 
@@ -88,7 +93,7 @@ def fit_glm(Y, X, A, family='gaussian', disp_glm=None, return_df=False, impute=F
     pvals = np.array(pvals)
     resid_response = np.array(resid_response).T
 
-    if impute:
+    if impute is not False:
         Yhat_0 = np.array(Yhat_0).T
         Yhat_1 = np.array(Yhat_1).T
         Yhat = (Yhat_0, Yhat_1)
