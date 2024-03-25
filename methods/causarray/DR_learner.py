@@ -3,27 +3,26 @@ import pandas as pd
 import statsmodels.api as sm
 import scipy as sp
 from scipy.stats import norm
-from sklearn.linear_model import LogisticRegression
-from causarray.estimation import fit_qr, AIPW_mean, cross_fitting
-from causarray.glm_test import fit_glm
-from causarray.inference import multiplier_bootstrap, step_down, augmentation
+from causarray.DR_estimation import AIPW_mean, cross_fitting, est_var, fit_ps
+from causarray.DR_inference import multiplier_bootstrap, step_down, augmentation
 from causarray.utils import reset_random_seeds
 from statsmodels.stats.multitest import multipletests
 
 
 
 def ATE(
-    Yg, W, D, B=1000, alpha=0.05, c=0.01, family='poisson', **kwargs):
+    Y, W, A, W_A=None, 
+    B=1000, alpha=0.05, c=0.01, family='poisson', **kwargs):
     '''
     Estimate the average treatment effects (ATEs) using AIPW.
 
     Parameters
     ----------
-    Yg : array
+    Y : array
         n x p matrix of outcomes.
     W : array
         n x d matrix of covariates.
-    D : array
+    A : array
         n x 1 vector of treatments.
     B : int
         Number of bootstrap samples.
@@ -43,28 +42,17 @@ def ATE(
     '''
     reset_random_seeds(0)
 
+    if len(A.shape)>1:
+        A = A[:,0]
+
     n = W.shape[0]
-    p = Yg.shape[1]
+    p = Y.shape[1]
 
-    pi, Y_hat_0, Y_hat_1 = cross_fitting(Yg, W, D, family=family, **kwargs)
-
-    # # logistic regression for propensity score
-    # clf = LogisticRegression(random_state=0, fit_intercept=False, **kwargs).fit(W, D)
-    # pi = clf.predict_proba(W)[:,1]
-
-    # res = fit_glm(Yg, W, D, family=family, impute=True)
-
-    #     # B_glm, _, tvals, pvals, _ = fit_glm(Yg**2, W, D, family='poisson', impute=False, offset=True)
-    #     # mu_glm = np.mean(np.exp(np.c_[W,D] @ B_glm.T + np.log(np.sum(Yg**2, axis=1, keepdims=True))), axis=0)
-    #     # disp_glm = (np.mean((Yg**2 - mu_glm[None,:])**2, axis=0) - mu_glm) / mu_glm**2
-    #     # disp_glm = np.clip(disp_glm, 0.01, 100.)
-    #     # res2 = fit_glm(Yg**2, W, D, 'nb', disp_glm, impute=True, offset=True)
-
-    # Y_hat_0, Y_hat_1 = res[1]
+    pi, Y_hat_0, Y_hat_1 = cross_fitting(Y, W, A, W_A, family=family, **kwargs)
     
     # point estimation of the treatment effect
-    tau_0, eta_0 = AIPW_mean(Yg, 1-D, Y_hat_0, 1-pi, pseudo_outcome=True)
-    tau_1, eta_1 = AIPW_mean(Yg, D, Y_hat_1, pi, pseudo_outcome=True)
+    tau_0, eta_0 = AIPW_mean(Y, 1-A, Y_hat_0, 1-pi, pseudo_outcome=True)
+    tau_1, eta_1 = AIPW_mean(Y, A, Y_hat_1, pi, pseudo_outcome=True)
 
     tau_estimate = tau_1 - tau_0
     eta = eta_1 - eta_0  - tau_estimate[None, :]
@@ -98,17 +86,17 @@ def ATE(
 
 
 def SATE(
-    Yg, W, D, B=1000, alpha=0.05, c=0.01, family='poisson', **kwargs):
+    Y, W, A, W_A=None, B=1000, alpha=0.05, c=0.01, family='poisson', **kwargs):
     '''
     Estimate the standardized average treatment effects (SATEs) using AIPW.
 
     Parameters
     ----------
-    Yg : array
+    Y : array
         n x p matrix of outcomes.
     W : array
         n x d matrix of covariates.
-    D : array
+    A : array
         n x 1 vector of treatments.
     B : int
         Number of bootstrap samples.
@@ -128,26 +116,19 @@ def SATE(
     '''
     reset_random_seeds(0)
 
+    if len(A.shape)>1:
+        A = A[:,0]
+
     n = W.shape[0]
-    p = Yg.shape[1]
+    p = Y.shape[1]
 
-    pi, Y_hat_0, Y_hat_1 = cross_fitting(Yg, W, D, family=family, **kwargs)
-
-    # # logistic regression for propensity score
-    # clf = LogisticRegression(random_state=0, fit_intercept=False, **kwargs).fit(W, D)
-    # pi = clf.predict_proba(W)[:,1]
-    # res = fit_glm(Yg, W, D, family=family, impute=True)
-
-    # Y_hat_0, Y_hat_1 = res[1]
+    pi, Y_hat_0, Y_hat_1 = cross_fitting(Y, W, A, W_A, family=family, **kwargs)
     Y2_hat_0 = Y_hat_0**2
-
-    # res = fit_glm(Yg**2, W, D, family=family, impute=True)
-    # Y2_hat_0, _ = res[1]
     
     # point estimation of the treatment effect
-    tau_0, eta_0 = AIPW_mean(Yg, 1-D, Y_hat_0, 1-pi, pseudo_outcome=True)
-    tau_1, eta_1 = AIPW_mean(Yg, D, Y_hat_1, pi, pseudo_outcome=True)
-    _, eta_2 = AIPW_mean(Yg**2, 1-D, Y2_hat_0, 1-pi, pseudo_outcome=True)
+    tau_0, eta_0 = AIPW_mean(Y, 1-A, Y_hat_0, 1-pi, pseudo_outcome=True)
+    tau_1, eta_1 = AIPW_mean(Y, A, Y_hat_1, pi, pseudo_outcome=True)
+    _, eta_2 = AIPW_mean(Y**2, 1-A, Y2_hat_0, 1-pi, pseudo_outcome=True)
 
     idx = np.mean(eta_2, axis=0) - np.mean(eta_0, axis=0)**2 <= 0.
     print(np.sum(idx))
@@ -158,7 +139,7 @@ def SATE(
     eta = (eta_1 - eta_0) / sd - tau_estimate[None,:] * (
         eta_2 + np.mean(eta_2, axis=0, keepdims=True) - 
         2 * np.mean(eta_0, axis=0, keepdims=True) * eta_0)/ (2 * sd**2)
-
+    
     theta_var = np.var(eta, axis=0, ddof=1) 
     sqrt_theta_var = np.sqrt(theta_var)
 
@@ -187,19 +168,19 @@ def SATE(
 
 
 
-
-def QTE(
-    Yg, W, D, B=1000, alpha=0.05, c=0.01, family='poisson', **kwargs):
+def FC(
+    Y, W, A, W_A=None, B=1000, alpha=0.05, c=0.01, family='poisson', 
+    Y_hat_0=None, Y_hat_1=None, cross_est=False, **kwargs):
     '''
-    Estimate the quantile treatment effects (QTEs) using AIPW.
+    Estimate the fold changes of treatment effects (FCs) using AIPW.
 
     Parameters
     ----------
-    Yg : array
+    Y : array
         n x p matrix of outcomes.
     W : array
         n x d matrix of covariates.
-    D : array
+    A : array
         n x 1 vector of treatments.
     B : int
         Number of bootstrap samples.
@@ -207,150 +188,170 @@ def QTE(
         The significance level.
     c : float
         The augmentation parameter.
+    family : str
+        The distribution of the outcome. The default is 'poisson'.
     **kwargs : dict
         Additional arguments to pass to fit_glm.
-
+    
     Returns
     -------
     df_res : DataFrame
         Dataframe of test results.
     '''
     reset_random_seeds(0)
-    
-    n = W.shape[0]
-    p = Yg.shape[1]
 
-    # logistic regression for propensity score
-    # Get the list of valid parameters for LogisticRegression
-    valid_params = LogisticRegression().get_params().keys()
-    # Remove keys in kwargs that are not valid parameters for LogisticRegression
-    valid_params = {k: v for k, v in kwargs.items() if k in valid_params}
-    clf = LogisticRegression(random_state=0, fit_intercept=False, **valid_params).fit(W, D)
-    pi = clf.predict_proba(W)[:,1]
-
-    id_g = np.where(np.quantile(Yg, 0.75 if 'upper' not in kwargs else kwargs['upper'], axis=0)>np.min(Yg, axis=0))[0]
-
-    # point estimation of the treatment effect
-    rho_0, rho_1, _, eta_0, eta_1, _ = fit_qr(Yg[:,id_g], W, D, pi, **kwargs)
-    
-    tau_estimate = (rho_1 - rho_0)
-    idx = (np.abs(tau_estimate) > 1e6)
-    print(np.sum(idx))
-    tau_estimate[idx] = 0.
-    eta = (eta_1 - eta_0) - tau_estimate[None, :]
-    theta_var = np.var(eta, axis=0, ddof=1) 
-    sqrt_theta_var = np.sqrt(theta_var)
-
-    # standardized treatment effect
-    tvalues_init = np.sqrt(n) * (tau_estimate) / sqrt_theta_var
-
-    # Multiple testing procedure
-    z_init = multiplier_bootstrap(eta, theta_var, B)
-    V, tvalues, z = step_down(tvalues_init, z_init, alpha)
-    V = augmentation(V, tvalues, c)
-    
-    # BH correction
-    pvals = sp.stats.norm.sf(np.abs(tvalues_init))*2
-    qvals = multipletests(pvals, alpha=0.05, method='fdr_bh')[1]
-    df = pd.DataFrame({
-        'tau_estimate': tau_estimate,
-        'sqrt_theta_var': sqrt_theta_var,
-        'tvalues_init': tvalues_init,
-
-        'tvalues': tvalues,
-        'rej': V,
-
-        'pvals': pvals, 
-        'qvals': qvals,
-        })
-
-    df_res = pd.DataFrame(columns=df.columns, index=np.arange(p))
-    df_res.loc[id_g,:] = df
-
-    return df_res
-
-
-def SQTE(
-    Yg, W, D, B=1000, alpha=0.05, c=0.01, family='poisson', **kwargs):
-    '''
-    Estimate the standardized quantile treatment effects (SQTEs) using AIPW.
-
-    Parameters
-    ----------
-    Yg : array
-        n x p matrix of outcomes.
-    W : array
-        n x d matrix of covariates.
-    D : array
-        n x 1 vector of treatments.
-    B : int
-        Number of bootstrap samples.
-    alpha : float
-        The significance level.
-    c : float
-        The augmentation parameter.
-    **kwargs : dict
-        Additional arguments to pass to fit_glm.
-
-    Returns
-    -------
-    df_res : DataFrame
-        Dataframe of test results.
-    '''
-    reset_random_seeds(0)
-    
-    n = W.shape[0]
-    p = Yg.shape[1]
-
-    # logistic regression for propensity score
-    # Get the list of valid parameters for LogisticRegression
-    valid_params = LogisticRegression().get_params().keys()
-    # Remove keys in kwargs that are not valid parameters for LogisticRegression
-    valid_params = {k: v for k, v in kwargs.items() if k in valid_params}
-    clf = LogisticRegression(random_state=0, fit_intercept=False, **valid_params).fit(W, D)
-    pi = clf.predict_proba(W)[:,1]
-
-    id_g = np.where(np.quantile(Yg, 0.75 if 'upper' not in kwargs else kwargs['upper'], axis=0)>np.min(Yg, axis=0))[0]
-
-    # point estimation of the treatment effect
-    rho_0, rho_1, iqr_0, eta_0, eta_1, eta_iqr = fit_qr(Yg[:,id_g], W, D, pi, **kwargs)
-    
-    tau_estimate = (rho_1 - rho_0)/iqr_0
-    
-    idx = np.isnan(iqr_0) | (np.abs(tau_estimate) > 1e6)
-    print(np.sum(idx))
-
-    tau_estimate[idx] = 0.
-    eta = ((eta_1 - eta_0) - tau_estimate[None,:] * eta_iqr) / iqr_0
-    eta[:,idx] = 0.
-    # eta = (eta_1 - eta_0) / iqr_0
-    theta_var = np.var(eta, axis=0, ddof=1) 
-    sqrt_theta_var = np.sqrt(theta_var)
-
-    # standardized treatment effect
-    tvalues_init = np.sqrt(n) * (tau_estimate) / sqrt_theta_var
-
-    # Multiple testing procedure
-    z_init = multiplier_bootstrap(eta, theta_var, B)
-    V, tvalues, z = step_down(tvalues_init, z_init, alpha)
-    V = augmentation(V, tvalues, c)
-
-    # BH correction
-    pvals = sp.stats.norm.sf(np.abs(tvalues_init))*2
-    qvals = multipletests(pvals, alpha=0.05, method='fdr_bh')[1]
-    df = pd.DataFrame({
-        'tau_estimate': tau_estimate,
-        'sqrt_theta_var': sqrt_theta_var,
-        'tvalues_init': tvalues_init,
-        'tvalues': tvalues,
-        'rej': V,
+    if len(A.shape)>1:
+        A = A[:,0]
         
+    n = W.shape[0]
+    p = Y.shape[1]
+
+    if Y_hat_0 is None or Y_hat_1 is None:    
+        pi, Y_hat_0, Y_hat_1 = cross_fitting(Y, W, A, W_A, family=family, **kwargs)
+    else:
+        pi = fit_ps(W, A, **kwargs)
+    
+    # point estimation of the treatment effect
+    tau_0, eta_0 = AIPW_mean(Y, 1-A, Y_hat_0, 1-pi, pseudo_outcome=True)
+    tau_1, eta_1 = AIPW_mean(Y, A, Y_hat_1, pi, pseudo_outcome=True)
+
+    # idx = (tau_0 <= 0.)
+    # print(np.sum(idx))
+    if cross_est:
+        tau_estimate, eta, theta_var = est_var(eta_0, eta_1)
+        sqrt_theta_var = np.sqrt(theta_var)
+        tvalues_init = np.sqrt(n/2) * (tau_estimate) / sqrt_theta_var
+    else:
+        tau_estimate = tau_1/tau_0 - 1
+        # tau_estimate[idx] = 0.
+        eta = (eta_1 - eta_0) / tau_0[None,:] - eta_0 * (tau_estimate / tau_0)[None,:]
+        theta_var = np.var(eta, axis=0, ddof=1) #est_var(eta_0, eta_1)##    
+
+        sqrt_theta_var = np.sqrt(theta_var)
+        # standardized treatment effect
+        tvalues_init = np.sqrt(n) * (tau_estimate) / sqrt_theta_var    
+
+    # Multiple testing procedure
+    id_test = theta_var>=1e-4
+    z_init = multiplier_bootstrap(eta, theta_var, B)
+    z_init[:,~id_test] = 0.
+    tvalues = tvalues_init.copy()
+    tvalues[~id_test] = 0.
+    V, tvalues, z = step_down(tvalues, z_init, alpha)
+
+    V[(~id_test) & (np.abs(tau_estimate)>0.1)] = 1.
+    V = augmentation(V, tvalues, c)
+
+    # z_init = multiplier_bootstrap(eta, theta_var, B)
+    # V, tvalues, z = step_down(tvalues_init, z_init, alpha)
+    # V = augmentation(V, tvalues, c)
+
+    # BH correction
+    pvals = sp.stats.norm.sf(np.abs(tvalues_init))*2
+    qvals = multipletests(pvals, alpha=0.05, method='fdr_bh')[1]
+    df_res = pd.DataFrame({
+        'tau_estimate': tau_estimate,
+        'sqrt_theta_var': sqrt_theta_var,
+        'tvalues_init': tvalues_init,
+        'tvalues': tvalues,
+        'rej': V,
         'pvals': pvals, 
         'qvals': qvals
         })
 
-    df_res = pd.DataFrame(columns=df.columns, index=np.arange(p))
-    df_res.loc[id_g,:] = df
-
     return df_res
 
+
+
+def LFC(
+    Y, W, A, W_A=None, B=1000, alpha=0.05, c=0.01, family='poisson', 
+    Y_hat_0=None, Y_hat_1=None, cross_est=False, **kwargs):
+    '''
+    Estimate the log-fold chanegs of treatment effects (LFCs) using AIPW.
+
+    Parameters
+    ----------
+    Y : array
+        n x p matrix of outcomes.
+    W : array
+        n x d matrix of covariates.
+    A : array
+        n x 1 vector of treatments.
+    B : int
+        Number of bootstrap samples.
+    alpha : float
+        The significance level.
+    c : float
+        The augmentation parameter.
+    family : str
+        The distribution of the outcome. The default is 'poisson'.
+    **kwargs : dict
+        Additional arguments to pass to fit_glm.
+    
+    Returns
+    -------
+    df_res : DataFrame
+        Dataframe of test results.
+    '''
+    reset_random_seeds(0)
+
+    if len(A.shape)>1:
+        A = A[:,0]
+        
+    n = W.shape[0]
+    p = Y.shape[1]
+
+    if Y_hat_0 is None or Y_hat_1 is None:    
+        pi, Y_hat_0, Y_hat_1 = cross_fitting(Y, W, A, W_A, family=family, **kwargs)
+    else:
+        pi = fit_ps(W, A, **kwargs)
+    
+    # point estimation of the treatment effect
+    tau_0, eta_0 = AIPW_mean(Y, 1-A, Y_hat_0, 1-pi, pseudo_outcome=True)
+    tau_1, eta_1 = AIPW_mean(Y, A, Y_hat_1, pi, pseudo_outcome=True)
+
+    # idx = (tau_0 <= 0.)
+    # print(np.sum(idx))
+    if cross_est:
+        tau_estimate, eta, theta_var = est_var(eta_0, eta_1)
+        sqrt_theta_var = np.sqrt(theta_var)
+        tvalues_init = np.sqrt(n/2) * (tau_estimate) / sqrt_theta_var
+    else:
+        tau_estimate = np.log(tau_1/(tau_0+1e-8)+1e-8)
+        # tau_estimate[idx] = 0.
+        eta = eta_1 / tau_1[None,:] -  eta_0 / tau_0[None,:]
+        theta_var = np.var(eta, axis=0, ddof=1) #est_var(eta_0, eta_1)##    
+
+        sqrt_theta_var = np.sqrt(theta_var)
+        # standardized treatment effect
+        tvalues_init = np.sqrt(n) * (tau_estimate) / sqrt_theta_var    
+
+    # Multiple testing procedure
+    id_test = theta_var>=1e-4
+    z_init = multiplier_bootstrap(eta, theta_var, B)
+    z_init[:,~id_test] = 0.
+    tvalues = tvalues_init.copy()
+    tvalues[~id_test] = 0.
+    V, tvalues, z = step_down(tvalues, z_init, alpha)
+
+    # V[(~id_test) & (np.abs(tau_estimate)>0.1)] = 1.
+    V = augmentation(V, tvalues, c)
+
+    # z_init = multiplier_bootstrap(eta, theta_var, B)
+    # V, tvalues, z = step_down(tvalues_init, z_init, alpha)
+    # V = augmentation(V, tvalues, c)
+
+    # BH correction
+    pvals = sp.stats.norm.sf(np.abs(tvalues_init))*2
+    qvals = multipletests(pvals, alpha=0.05, method='fdr_bh')[1]
+    df_res = pd.DataFrame({
+        'tau_estimate': tau_estimate,
+        'sqrt_theta_var': sqrt_theta_var,
+        'tvalues_init': tvalues_init,
+        'tvalues': tvalues,
+        'rej': V,
+        'pvals': pvals, 
+        'qvals': qvals
+        })
+
+    return df_res

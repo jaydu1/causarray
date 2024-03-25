@@ -1,0 +1,214 @@
+from causarray.gcate_opt import *
+
+
+
+def fit_gcate(Y, X, r,
+    kwargs_glm={}, kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
+    c1=None, intercept=0, offset=0, num_d=1, C=1e5
+):
+    '''
+    Parameters
+    ----------
+    Y : array-like, shape (n, p)
+        The response variable.
+    X : array-like, shape (n, d)
+        The covariate matrix.
+    r : int
+        The number of unmeasured confounders.
+    kwargs_glm : dict
+        Keyword arguments for the GLM solver.
+    kwargs_ls_1 : dict
+        Keyword arguments for the line search solver in the first phrase.
+    kwargs_ls_2 : dict
+        Keyword arguments for the line search solver in the second phrase.
+    kwargs_es_1 : dict
+        Keyword arguments for the early stopper in the first phrase.
+    kwargs_es_2 : dict
+        Keyword arguments for the early stopper in the second phrase.
+    c1 : float
+        The regularization constant in the first phrase. Default is 0.1.
+    intercept : int
+        Whether to include intercept in the model. Default is 0.
+    offset : int
+        Whether to use offset in the model. Default is 0.
+    num_d : int
+        The number of covariates to be regularized. Assume the last num_d covariates are to be regularized. Default is 1.
+    C : float
+        The constant for maximum l2 norm of the coefficients. Default is 1e5.
+    '''
+    if not (X.ndim == 2 and Y.ndim == 2):
+        raise ValueError("Input must have ndim of 2. Y.ndim: {}, X.ndim: {}.".format(Y.ndim, X.ndim))
+
+    if np.sum(np.any(Y!=0., axis=0))<Y.shape[1]:
+        raise ValueError("Y contains non-expressed features.")
+                
+    # preprocess
+    scale_factor = np.ones((1, X.shape[1]))
+        
+    d = X.shape[1]
+    p = Y.shape[1]
+    n = Y.shape[0]
+
+    r = int(r)
+
+    c1 = 0.1 if c1 is None else c1
+    lam1 = c1 * np.sqrt(np.log(p)/n)
+
+    num_missing = np.zeros(2)
+
+    _, _, P_Gamma, A1, A2 = estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
+        lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2)
+        
+    return A1, A2
+
+
+def estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
+    lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2):
+    '''
+    Two-stage estimation of the GCATE model.
+
+    Parameters
+    ----------
+    Y : array-like, shape (n, p)
+        Response matrix.
+    X : array-like, shape (n, d)
+        Observed covariate matrix.
+    r : int
+        Number of latent variables.
+    intercept : int
+        Whether to include intercept in the model.
+    offset : int
+        Whether to include offset in the model.
+    num_d : int
+        The number of columns to be regularized. Assume the last 'num_d' columns of the covariates are the regularized coefficients. If 'num_d' is None, it is set to be 'd-offset-intercept' by default.
+    C : float
+        The gradients are preojected to the L2-norm ball with radius 2C for two optimization problems.
+    num_missing : array-like, shape (2,)
+        The number of missing data for the first and second optimization problems.
+    lam1 : float
+        Regularization parameter for the first optimization problem.
+    kwargs_glm : dict
+        Keyword arguments for the GLM.
+    kwargs_ls_1 : dict
+        Keyword arguments of the line search algorithm for the first optimization problem.
+    kwargs_ls_2 : dict
+        Keyword arguments of the line search algorithm for the second optimization problem.
+    kwargs_es_1 : dict
+        Keyword arguments of the early stopping monitor for the first optimization problem.
+    kwargs_es_2 : dict
+        Keyword arguments of the early stopping monitor for the second optimization problem.
+    **kwargs : dict
+        Additional keyword arguments.
+
+    Returns
+    -------
+    A01 : array-like, shape (n, d+r)
+        The observed covaraite and unobserved uncorrelated latent factors.
+    A02 : array-like, shape (p, d+r)  
+        The estimated marginal effects and latent coefficients.
+    P_Gamma : array-like, shape (p, p)
+        The projection matrix for the second optimization problem.
+    A1 : array-like, shape (n, d+r)
+        The observed covaraite and unobserved latent factors.
+    A2 : array-like, shape (p, d+r)
+        The estimated primary effects and latent coefficients.
+    '''
+    d = X.shape[1]
+    p = Y.shape[1]
+
+    A01, A02, info = alter_min(
+        Y, r, X=X, P1=True, intercept=intercept, offset=offset, C=C, num_missing=num_missing,
+        kwargs_glm=kwargs_glm, kwargs_ls=kwargs_ls_1, kwargs_es=kwargs_es_1)
+    Q, _ = sp.linalg.qr(A02[:,d:], mode='economic')
+    P_Gamma = np.identity(p) - Q @ Q.T
+
+    A1, A2, info = alter_min(
+        Y, r, X=X, P2=P_Gamma, A=A01.copy(), B=A02.copy(), lam=lam1, 
+        intercept=intercept, offset=offset, num_d=num_d, C=C, num_missing=num_missing,
+        kwargs_glm=kwargs_glm, kwargs_ls=kwargs_ls_2, kwargs_es=kwargs_es_2)
+    return A01, A02, P_Gamma, A1, A2
+
+
+def estimate_r(Y, X, r_max, c=1.,
+    kwargs_glm={}, kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
+    c1=None, intercept=0, offset=0, num_d=1, C=None, **kwargs
+):
+    '''
+    Estimate the number of latent factors for the GCATE model.
+
+    Parameters
+    ----------
+    Y : array-like, shape (n, p)
+        Response matrix.
+    X : array-like, shape (n, d)
+        Observed covariate matrix.
+    r_max : int
+        Number of latent variables.
+    c : float
+        The constant factor for the complexity term.
+    kwargs_glm : dict
+        Keyword arguments for the GLM.
+    kwargs_ls_1 : dict
+        Keyword arguments of the line search algorithm for the first optimization problem.
+    kwargs_ls_2 : dict
+        Keyword arguments of the line search algorithm for the second optimization problem.
+    kwargs_es_1 : dict
+        Keyword arguments of the early stopping monitor for the first optimization problem.
+    kwargs_es_2 : dict
+        Keyword arguments of the early stopping monitor for the second optimization problem.
+    c1 : float
+        Regularization parameter for the second optimization problem.
+    intercept : int
+        Whether to include intercept in the model.
+    offset : int
+        Whether to include offset in the model.
+    num_d : int
+        Number of latent variables.
+    C : float
+        The gradients are preojected to the L2-norm ball with radius 2C for two optimization problems.
+
+    Returns
+    -------
+    df_r : DataFrame
+        Results of the number of latent factors.
+    '''
+    if not (X.ndim == 2 and Y.ndim == 2):
+        raise ValueError("Input must have ndim of 2. Y.ndim: {}, X.ndim: {}.".format(Y.ndim, X.ndim))
+
+    if np.sum(np.any(Y!=0., axis=0))<Y.shape[1]:
+        raise ValueError("Y contains non-expressed features.")
+                
+    # preprocess
+    scale_factor = np.ones((1, X.shape[1]))
+        
+    d = X.shape[1]
+    p = Y.shape[1]
+    n = Y.shape[0]
+
+    kwargs_glm = {**{'family':'gaussian', 'nuisance':np.ones((1,p))}, **kwargs_glm}
+
+    c1 = 0.1 if c1 is None else c1
+    lam1 = c1 * np.sqrt(np.log(p)/n)
+
+    res = []
+    if np.isscalar(r_max):
+        r_list = np.arange(1, r_max+1)
+    else:
+        r_list = np.array(r_max)
+    
+    num_missing = np.zeros(2)
+    for r in r_list:
+        _, _, _, A1, A2 = estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
+            lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, **kwargs)
+
+        logh = log_h(Y, kwargs_glm['family'], kwargs_glm['nuisance'])
+        
+        ll = 2 * ( 
+            nll(Y, A1, A2, kwargs_glm['family'], kwargs_glm['nuisance']) / p 
+            - np.sum(logh) / (n*p) ) 
+        nu = (d + r) * np.maximum(n,p) * np.log(n * p / np.maximum(n,p)) / (n*p)
+        jic = ll + c * nu
+        res.append([r, ll, nu, jic])
+
+    df_r = pd.DataFrame(res, columns=['r', 'deviance', 'nu', 'JIC'])
+    return df_r    

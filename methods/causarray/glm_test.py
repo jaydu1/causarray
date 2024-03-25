@@ -60,7 +60,7 @@ def fit_glm(Y, X, A, family='gaussian', disp_glm=None, return_df=False, impute=F
                 X_test = X[:,:-1]
             Y_null = np.full(X_test.shape[0], np.mean(Y[:,j]))
             Yhat_0.append(mod.predict(np.c_[X_test, np.zeros((X_test.shape[0],1))], offset=offsets) if mod else Y_null)
-            Yhat_1.append(mod.predict(np.c_[X_test, np.zeros((X_test.shape[0],1))], offset=offsets) if mod else Y_null)
+            Yhat_1.append(mod.predict(np.c_[X_test, np.ones((X_test.shape[0],1))], offset=offsets) if mod else Y_null)
         else:
             Yhat.append(mod.predict(X, offset=offsets) if mod else np.full(Y.shape[0], np.mean(Y[:,j])))
 

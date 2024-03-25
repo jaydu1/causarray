@@ -23,11 +23,12 @@ def multiplier_bootstrap(resid, theta_var, B):
         [B, p] Bootstrap statistics for each hypothesis.
     '''
     n, p = resid.shape
+    B = int(B)
     z_init = np.zeros((B,p))
     for b in range(B):
         g = np.random.normal(size=n)
         temp = np.sum(resid * g[:, None], axis=0)
-        z_init[b, :] = theta_var**(-0.5) * temp / np.sqrt(n)
+        z_init[b, :] = temp / np.sqrt(n * theta_var)
     return z_init
     
 
@@ -61,7 +62,7 @@ def step_down(tvalues_init, z_init, alpha):
         tvalues_max = np.max(np.abs(tvalues))
         index_temp = np.unravel_index(np.argmax(np.abs(tvalues)), tvalues.shape)
         z_max = np.max(np.abs(z), axis=1)
-        z_max_quan = np.quantile(z_max, 1-alpha)
+        z_max_quan = np.quantile(z_max, 1-alpha, interpolation='lower')
         if tvalues_max < z_max_quan or z_max_quan == 0:
             break
         tvalues[index_temp] = 0
@@ -100,6 +101,8 @@ def augmentation(V, tvalues, c):
 
 
 def comp_stat(true, pred, c):
+    true = np.array(true).flatten()
+    pred = np.array(pred).flatten()
 
     # type I error
     typeI_err = np.sum(true[pred==1]==0)/np.sum(true==0)
