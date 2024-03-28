@@ -28,46 +28,63 @@ causarray <- import("causarray")
 #' @returns Dataframe containing Wilcoxon statistic and p-value for each gene
 #'
 run_causarray <- function(Y, W, A, r, alpha=0.05, c=0.1, func='LFC', family='poisson', ...){
-
-    cat('Running causrray...')
-
-    Y <- as.matrix(Y)
-
-
-    loglibsize <- log2(rowSums(Y))
-    intercept <- rep(1, nrow(W))
-    W <- cbind(intercept, W, loglibsize)
-    W <- as.matrix(W)
-    A <- as.matrix(A)
-    # W <- cbind(scale(W[,1], center=F), scale(W[,-1])) * sqrt(nrow(W))
+    data <- prep_causarray(Y, W, A)
+    Y <- data[[1]]; W <- data[[2]]; A <- data[[3]]
+    d <- dim(W)[2]
 
     # confounder adjustment
     if(r>0){
-        res <- causarray$fit_gcate(Y, cbind(W, A), r, 
-        kwargs_glm=list('family'=family)
-        )
+        res <- causarray$fit_gcate(Y, cbind(W, A), r, family=family, ...)
         # res is a list of 2 matrices:
         # A1 = [X, Z] and A2 = [B, Gamma] where X = [W, A]
-        Wp <- res[[1]]
-        d <- dim(W)[2]
+        Wp <- res[[1]]        
         Wp <- Wp[,-(d+1)] # remove the column of A
+        disp_glm <- res[[3]]$kwargs_glm$nuisance
+        Z <- Wp[,(d+1):ncol(Wp)]
     }else{
         Wp <- W
+        disp_glm <- NULL
+        Z <- NULL
     }
     
     # different estimands: log-fold change, fold change, average treatment effects, and standarized average treatment effects
     if(func=='LFC'){
-        df_res <- causarray$LFC(Y, Wp, A, alpha=alpha, c=c, family=family, ...)
+        res <- causarray$LFC(Y, Wp, A, alpha=alpha, c=c, family=family, disp_glm=disp_glm, ...)
     }else if(func=='FC'){
-        df_res <- causarray$FC(Y, Wp, A, alpha=alpha, c=c, family=family, ...)
+        res <- causarray$FC(Y, Wp, A, alpha=alpha, c=c, family=family, disp_glm=disp_glm, ...)
     }else if(func=='ATE'){
-        df_res <- causarray$ATE(Y, Wp, A, alpha=alpha, c=c, family=family, ...)
+        res <- causarray$ATE(Y, Wp, A, alpha=alpha, c=c, family=family, disp_glm=disp_glm, ...)
     }else if(func=='SATE'){
-        df_res <- causarray$SATE(Y, Wp, A, alpha=alpha, c=c, family=family, ...)
-    }    
-    df_res
+        res <- causarray$SATE(Y, Wp, A, alpha=alpha, c=c, family=family, disp_glm=disp_glm, ...)
+    }
+
+    causarray.df <- res[[1]]
+    causarray.res <- res[[2]]
+    causarray.res$Z <- Z
+
+    return(list('causarray.df'=causarray.df, 'causarray.res'=causarray.res))
 }
 
+estimate_r_causarray <- function(Y, W, A, r_max, family='poisson', ...){
+    data <- prep_causarray(Y, W, A)
+    Y <- data[[1]]; W <- data[[2]]; A <- data[[3]]
+    df_r <- causarray$estimate_r(Y, cbind(W, A), r_max, family=family, ...)
+    df_r
+}
+
+
+
+prep_causarray <- function(Y, W, A, ...){
+    Y <- as.matrix(Y)
+    W <- as.matrix(W)
+    A <- as.matrix(A)
+    loglibsize <- scale(log2(rowSums(Y)))
+    intercept <- rep(1, nrow(W))
+    W <- cbind(intercept, W, loglibsize)
+    W <- as.matrix(W)
+
+    return(list(Y, W, A))
+}
 
 
 outcome_model <- function(dds){
@@ -113,6 +130,7 @@ library(Seurat)
 library(SeuratObject)
 require(doParallel) # for parallel processing
 library(data.table)
+library(stringr)
 
 # Wilcoxon ----
 #' Function that runs Wilcoxon test on pseudo-bulk data (residuals from poisson regression)
@@ -304,24 +322,9 @@ run_cocoa <- function(
     A <- metadata$trt
     if(is.null(indvs)){
         indvs <- 1:dim(sc)[1]
-        # indvs <- c()
-        # indv <- 1
-        # prev_trt <- A[1]
-        # for (trt_i in A) {
-        #     if (trt_i != prev_trt) {
-        #         indv <- indv + 1
-        #         prev_trt = trt_i
-        #     } 
-        #     # indvs <- c(indvs, paste0('indv', indv))
-        #     indvs <- c(indvs, indv)
-        # }
     }
-
-    cell2indv <- data.frame(cell=1:dim(sc)[1],#paste0('cell', 1:dim(sc)[1]), 
-                            indv=indvs)
-
-    indv2trt <- data.frame(indv=indvs[!duplicated(indvs)],
-                        exp=A)
+    cell2indv <- data.frame(cell=1:dim(sc)[1], indv=indvs)
+    indv2trt <- data.frame(indv=indvs[!duplicated(indvs)], exp=A)
 
     # prep_cocoa needs to take in a S4 matrix
     seuratY <- CreateSeuratObject(counts=sc, project = "simu", assay = "RNA",
@@ -334,8 +337,8 @@ run_cocoa <- function(
         s4Y <- seuratY@assays$RNA@counts # Seurat v4
     }
     
-    colnames(s4Y) <- 1:dim(sc)[2]#paste0('gene', 1:dim(sc)[2])
-    rownames(s4Y) <- 1:dim(sc)[1]#paste0('cell', 1:dim(sc)[1])
+    colnames(s4Y) <- 1:dim(sc)[2]
+    rownames(s4Y) <- 1:dim(sc)[1]
     mtx.data <- prep_cocoa(s4Y, cocoAWriteName)
 
     res.cocoa <- fit_cocoa(mtx.data, cell2indv, indv2trt)
