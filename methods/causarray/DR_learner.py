@@ -5,7 +5,7 @@ import scipy as sp
 from scipy.stats import norm
 from causarray.DR_estimation import AIPW_mean, cross_fitting, est_var, fit_ps
 from causarray.DR_inference import multiplier_bootstrap, step_down, augmentation
-from causarray.utils import reset_random_seeds
+from causarray.utils import reset_random_seeds, pprint
 from statsmodels.stats.multitest import multipletests
 
 
@@ -81,7 +81,8 @@ def ATE(
         'qvals': qvals
         })
 
-    return df_res
+    estimation = {'pi':pi, 'Y_hat_0':Y_hat_0, 'Y_hat_1':Y_hat_1}
+    return df_res, estimation
 
 
 
@@ -155,16 +156,16 @@ def SATE(
     pvals = sp.stats.norm.sf(np.abs(tvalues_init))*2
     qvals = multipletests(pvals, alpha=0.05, method='fdr_bh')[1]
     df_res = pd.DataFrame({
-        'tau_estimate': tau_estimate,
-        'sqrt_theta_var': sqrt_theta_var,
-        'tvalues_init': tvalues_init,
-        'tvalues': tvalues,
+        'tau': tau_estimate,
+        'std': sqrt_theta_var,
+        'stat': tvalues_init,
         'rej': V,
-        'pvals': pvals, 
-        'qvals': qvals
+        'pvalue': pvals, 
+        'padj': qvals
         })
 
-    return df_res
+    estimation = {'pi':pi, 'Y_hat_0':Y_hat_0, 'Y_hat_1':Y_hat_1}
+    return df_res, estimation
 
 
 
@@ -222,10 +223,12 @@ def FC(
         sqrt_theta_var = np.sqrt(theta_var)
         tvalues_init = np.sqrt(n/2) * (tau_estimate) / sqrt_theta_var
     else:
-        tau_estimate = tau_1/tau_0 - 1
-        # tau_estimate[idx] = 0.
-        eta = (eta_1 - eta_0) / tau_0[None,:] - eta_0 * (tau_estimate / tau_0)[None,:]
-        theta_var = np.var(eta, axis=0, ddof=1) #est_var(eta_0, eta_1)##    
+        tau_estimate = tau_1/tau_0 - 1        
+        eta = (eta_1 - eta_0) / tau_0[None,:] - eta_0 * (tau_estimate / tau_0)[None,:]        
+        theta_var = np.var(eta, axis=0, ddof=1)
+
+        idx = np.isnan(tau_estimate)
+        tau_estimate[idx] = 0.; eta[:,idx] = 0.; theta_var[idx] = np.inf
 
         sqrt_theta_var = np.sqrt(theta_var)
         # standardized treatment effect
@@ -250,22 +253,22 @@ def FC(
     pvals = sp.stats.norm.sf(np.abs(tvalues_init))*2
     qvals = multipletests(pvals, alpha=0.05, method='fdr_bh')[1]
     df_res = pd.DataFrame({
-        'tau_estimate': tau_estimate,
-        'sqrt_theta_var': sqrt_theta_var,
-        'tvalues_init': tvalues_init,
-        'tvalues': tvalues,
+        'tau': tau_estimate,
+        'std': sqrt_theta_var,
+        'stat': tvalues_init,
         'rej': V,
-        'pvals': pvals, 
-        'qvals': qvals
+        'pvalue': pvals, 
+        'padj': qvals
         })
 
-    return df_res
+    estimation = {'pi':pi, 'Y_hat_0':Y_hat_0, 'Y_hat_1':Y_hat_1}
+    return df_res, estimation
 
 
 
 def LFC(
-    Y, W, A, W_A=None, B=1000, alpha=0.05, c=0.01, family='poisson', 
-    Y_hat_0=None, Y_hat_1=None, cross_est=False, **kwargs):
+    Y, W, A, W_A=None, B=1000, alpha=0.05, c=0.1, family='poisson', 
+    Y_hat_0=None, Y_hat_1=None, cross_est=False, verbose=False, **kwargs):
     '''
     Estimate the log-fold chanegs of treatment effects (LFCs) using AIPW.
 
@@ -285,6 +288,8 @@ def LFC(
         The augmentation parameter.
     family : str
         The distribution of the outcome. The default is 'poisson'.
+    verbose : bool
+        Whether to print the model information.
     **kwargs : dict
         Additional arguments to pass to fit_glm.
     
@@ -294,6 +299,10 @@ def LFC(
         Dataframe of test results.
     '''
     reset_random_seeds(0)
+
+    if verbose:
+        pprint.pprint({'estimands':'LFC','n':Y.shape[0],'p':Y.shape[1],'d':W.shape[1]})
+        pprint.pprint(kwargs)
 
     if len(A.shape)>1:
         A = A[:,0]
@@ -305,27 +314,31 @@ def LFC(
         pi, Y_hat_0, Y_hat_1 = cross_fitting(Y, W, A, W_A, family=family, **kwargs)
     else:
         pi = fit_ps(W, A, **kwargs)
-    
-    # point estimation of the treatment effect
-    tau_0, eta_0 = AIPW_mean(Y, 1-A, Y_hat_0, 1-pi, pseudo_outcome=True)
-    tau_1, eta_1 = AIPW_mean(Y, A, Y_hat_1, pi, pseudo_outcome=True)
 
-    # idx = (tau_0 <= 0.)
-    # print(np.sum(idx))
+    # point estimation of the treatment effect
+    tau_0, eta_0 = AIPW_mean(Y, 1-A, Y_hat_0, 1-pi, pseudo_outcome=True, positive=True)
+    tau_1, eta_1 = AIPW_mean(Y, A, Y_hat_1, pi, pseudo_outcome=True, positive=True)
+
     if cross_est:
-        tau_estimate, eta, theta_var = est_var(eta_0, eta_1)
+        tau_estimate, eta, theta_var = est_var(eta_0, eta_1, log=True)
         sqrt_theta_var = np.sqrt(theta_var)
         tvalues_init = np.sqrt(n/2) * (tau_estimate) / sqrt_theta_var
-    else:
-        tau_estimate = np.log(tau_1/(tau_0+1e-8)+1e-8)
-        # tau_estimate[idx] = 0.
-        eta = eta_1 / tau_1[None,:] -  eta_0 / tau_0[None,:]
-        theta_var = np.var(eta, axis=0, ddof=1) #est_var(eta_0, eta_1)##    
+    else:        
+
+        tau_1 = np.clip(tau_1, 1e-8, None)
+        tau_0 = np.clip(tau_0, 1e-8, None)
+
+        tau_estimate = np.log(tau_1 / tau_0)
+        eta = eta_1 / tau_1[None,:] -  eta_0 / tau_0[None,:]        
+        theta_var = np.var(eta, axis=0, ddof=1)
+        
+        idx = np.isnan(tau_estimate)
+        tau_estimate[idx] = 0.; eta[:,idx] = 0.; theta_var[idx] = np.inf
 
         sqrt_theta_var = np.sqrt(theta_var)
         # standardized treatment effect
-        tvalues_init = np.sqrt(n) * (tau_estimate) / sqrt_theta_var    
-
+        tvalues_init = np.sqrt(n) * (tau_estimate) / sqrt_theta_var
+    
     # Multiple testing procedure
     id_test = theta_var>=1e-4
     z_init = multiplier_bootstrap(eta, theta_var, B)
@@ -337,21 +350,17 @@ def LFC(
     # V[(~id_test) & (np.abs(tau_estimate)>0.1)] = 1.
     V = augmentation(V, tvalues, c)
 
-    # z_init = multiplier_bootstrap(eta, theta_var, B)
-    # V, tvalues, z = step_down(tvalues_init, z_init, alpha)
-    # V = augmentation(V, tvalues, c)
-
     # BH correction
     pvals = sp.stats.norm.sf(np.abs(tvalues_init))*2
     qvals = multipletests(pvals, alpha=0.05, method='fdr_bh')[1]
     df_res = pd.DataFrame({
-        'tau_estimate': tau_estimate,
-        'sqrt_theta_var': sqrt_theta_var,
-        'tvalues_init': tvalues_init,
-        'tvalues': tvalues,
+        'tau': tau_estimate,
+        'std': sqrt_theta_var,
+        'stat': tvalues_init,
         'rej': V,
-        'pvals': pvals, 
-        'qvals': qvals
+        'pvalue': pvals, 
+        'padj': qvals
         })
 
-    return df_res
+    estimation = {'pi':pi, 'Y_hat_0':Y_hat_0, 'Y_hat_1':Y_hat_1}
+    return df_res, estimation

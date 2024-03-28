@@ -29,6 +29,10 @@ def multiplier_bootstrap(resid, theta_var, B):
         g = np.random.normal(size=n)
         temp = np.sum(resid * g[:, None], axis=0)
         z_init[b, :] = temp / np.sqrt(n * theta_var)
+
+    # g = np.random.normal(size=(B,n,1))
+    # z_init = np.sum(resid[None, :,:] * g, axis=1) / np.sqrt(n * theta_var[None,:])
+
     return z_init
     
 

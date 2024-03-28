@@ -1,11 +1,11 @@
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from causarray.glm_test import fit_glm
+from causarray.gcate_glm import fit_glm
 n_jobs = 8
 
 
-def AIPW_mean(y, A, mu, pi, pseudo_outcome=False):
+def AIPW_mean(y, A, mu, pi, pseudo_outcome=False, positive=False):
     '''
     Augmented inverse probability weighted estimator (AIPW)
 
@@ -21,6 +21,8 @@ def AIPW_mean(y, A, mu, pi, pseudo_outcome=False):
         Propensity score.
     pseudo_outcome : bool, optional
         Whether to return the pseudo-outcome. The default is False.
+    positive : bool, optional
+        Whether to restrict the pseudo-outcome to be positive.
 
     Returns
     -------
@@ -33,6 +35,10 @@ def AIPW_mean(y, A, mu, pi, pseudo_outcome=False):
     if len(mu.shape)>1:
         weight = weight[:,None]
     pseudo_y = weight * (y - mu) + mu
+    
+    if positive:
+        pseudo_y = np.clip(pseudo_y, 0, None)
+
     tau = np.mean(pseudo_y, axis=0)
 
     if pseudo_outcome:
@@ -45,7 +51,7 @@ from sklearn.model_selection import KFold
 
 def cross_fitting(
     Y, X, A, X_A, family='poisson', K=1, 
-    ps_model='random_forest', **kwargs):
+    ps_model='logistic', verbose=False, **kwargs):
     '''
     Cross-fitting for causal estimands.
 
@@ -78,7 +84,6 @@ def cross_fitting(
     if X_A is None:
         X_A = X
 
-
     if ps_model=='logistic':
         clf_ps = LogisticRegression
         kwargs['fit_intercept'] = False
@@ -91,7 +96,13 @@ def cross_fitting(
     valid_params = clf_ps().get_params().keys()
     # Remove keys in kwargs that are not valid parameters for LogisticRegression
     valid_params = {k: v for k, v in kwargs.items() if k in valid_params}
-    print(valid_params)
+    if verbose:
+        pprint.pprint(valid_params)
+
+    if 'disp_glm' in kwargs:
+        disp_glm = kwargs['disp_glm']
+    else:
+        disp_glm = None
     
     if K>1:
         # Initialize KFold cross-validator
@@ -101,9 +112,9 @@ def cross_fitting(
         folds = [(np.arange(X.shape[0]), np.arange(X.shape[0]))]
 
     # Initialize lists to store results
-    pi_arr = np.zeros(X.shape[0])
-    Y_hat_0_arr = np.zeros_like(Y)
-    Y_hat_1_arr = np.zeros_like(Y)
+    pi_arr = np.zeros(X.shape[0], dtype=float)
+    Y_hat_0_arr = np.zeros_like(Y, dtype=float)
+    Y_hat_1_arr = np.zeros_like(Y, dtype=float)
 
     # Perform cross-fitting
     for train_index, test_index in folds:
@@ -121,7 +132,8 @@ def cross_fitting(
         pi = clf.predict_proba(XA_test)[:,1]
 
         # Fit GLM on training data and predict on test data
-        res = fit_glm(Y_train, X_train, A_train, family=family, impute=X_test)
+        res = fit_glm(Y_train, X_train, A_train, family=family, alpha=1e-4,
+            method='glm', disp_glm=disp_glm, impute=X_test)
         
         # Store results
         pi_arr[test_index] = pi
@@ -159,7 +171,7 @@ def fit_ps(X, A,
 
 from sklearn.model_selection import ShuffleSplit
 
-def est_var(eta_0, eta_1, n_splits=10):
+def est_var(eta_0, eta_1, n_splits=10, log=False):
     eta = np.zeros_like(eta_0)
     tau = np.zeros(eta_0.shape[1])
     var = np.zeros(eta_0.shape[1])
@@ -168,11 +180,20 @@ def est_var(eta_0, eta_1, n_splits=10):
         for (train_index, test_index) in [(train_i, test_i), (test_i, train_i)]:
             tau_1 = np.mean(eta_1[test_index], axis=0)
             tau_0 = np.mean(eta_0[test_index], axis=0)
-            tau_estimate = tau_1/tau_0 - 1
-            tau += tau_estimate
+            if log:
+                tau_1 = np.clip(tau_1, 1e-8, None)
+                tau_0 = np.clip(tau_0, 1e-8, None)
+                tau_estimate = np.log(tau_1/tau_0)
+            else:
+                tau_estimate = tau_1/tau_0 - 1
             _eta = (eta_1 - eta_0)[train_index] / tau_0[None,:] - eta_0[train_index] * (tau_estimate / tau_0)[None,:]
+            _var = np.var(_eta, axis=0, ddof=1)
+            idx = np.isnan(tau_estimate)
+            tau_estimate[idx] = 0.; _eta[:,idx] = 0.; _var = np.inf
+
+            tau += tau_estimate
             eta[train_index] += _eta
-            var += np.var(_eta, axis=0, ddof=1)
+            var += _var
     tau /= 2*n_splits
     eta /= n_splits
     var /= 2*n_splits

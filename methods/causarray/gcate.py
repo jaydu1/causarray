@@ -1,10 +1,10 @@
 from causarray.gcate_opt import *
+import pandas as pd
 
 
-
-def fit_gcate(Y, X, r,
-    kwargs_glm={}, kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
-    c1=None, intercept=0, offset=0, num_d=1, C=1e5
+def fit_gcate(Y, X, r, family='poisson', disp_glm=None,
+    kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
+    c1=None, intercept=0, offset=0, num_d=1, C=None, verbose=False, **kwargs
 ):
     '''
     Parameters
@@ -15,8 +15,10 @@ def fit_gcate(Y, X, r,
         The covariate matrix.
     r : int
         The number of unmeasured confounders.
-    kwargs_glm : dict
-        Keyword arguments for the GLM solver.
+    family : str
+        The family of the GLM. Default is 'poisson'.
+    disp_glm : array-like, shape (1, p) or None
+        The dispersion parameter for the negative binomial distribution.
     kwargs_ls_1 : dict
         Keyword arguments for the line search solver in the first phrase.
     kwargs_ls_2 : dict
@@ -41,7 +43,15 @@ def fit_gcate(Y, X, r,
 
     if np.sum(np.any(Y!=0., axis=0))<Y.shape[1]:
         raise ValueError("Y contains non-expressed features.")
-                
+
+    kwargs_glm = {}
+    kwargs_glm['family'] = family
+
+    if kwargs_glm['family']=='nb':
+        disp_glm = estimate_disp(Y, X)
+    if disp_glm is not None:
+        kwargs_glm['nuisance'] = disp_glm
+
     # preprocess
     scale_factor = np.ones((1, X.shape[1]))
         
@@ -51,19 +61,19 @@ def fit_gcate(Y, X, r,
 
     r = int(r)
 
-    c1 = 0.1 if c1 is None else c1
+    c1 = 0.02 if c1 is None else c1
     lam1 = c1 * np.sqrt(np.log(p)/n)
 
     num_missing = np.zeros(2)
 
-    _, _, P_Gamma, A1, A2 = estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
-        lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2)
+    _, _, P_Gamma, A1, A2, info = estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
+        lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, verbose)
         
-    return A1, A2
+    return A1, A2, info
 
 
 def estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
-    lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2):
+    lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, verbose=False):
     '''
     Two-stage estimation of the GCATE model.
 
@@ -74,7 +84,7 @@ def estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
     X : array-like, shape (n, d)
         Observed covariate matrix.
     r : int
-        Number of latent variables.
+        Number of latent variables.    
     intercept : int
         Whether to include intercept in the model.
     offset : int
@@ -114,23 +124,23 @@ def estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
         The estimated primary effects and latent coefficients.
     '''
     d = X.shape[1]
-    p = Y.shape[1]
+    p = Y.shape[1]    
 
     A01, A02, info = alter_min(
         Y, r, X=X, P1=True, intercept=intercept, offset=offset, C=C, num_missing=num_missing,
-        kwargs_glm=kwargs_glm, kwargs_ls=kwargs_ls_1, kwargs_es=kwargs_es_1)
+        kwargs_glm=kwargs_glm, kwargs_ls=kwargs_ls_1, kwargs_es=kwargs_es_1, verbose=verbose)
     Q, _ = sp.linalg.qr(A02[:,d:], mode='economic')
     P_Gamma = np.identity(p) - Q @ Q.T
 
     A1, A2, info = alter_min(
         Y, r, X=X, P2=P_Gamma, A=A01.copy(), B=A02.copy(), lam=lam1, 
         intercept=intercept, offset=offset, num_d=num_d, C=C, num_missing=num_missing,
-        kwargs_glm=kwargs_glm, kwargs_ls=kwargs_ls_2, kwargs_es=kwargs_es_2)
-    return A01, A02, P_Gamma, A1, A2
+        kwargs_glm=kwargs_glm, kwargs_ls=kwargs_ls_2, kwargs_es=kwargs_es_2, verbose=verbose)
+    return A01, A02, P_Gamma, A1, A2, info
 
 
-def estimate_r(Y, X, r_max, c=1.,
-    kwargs_glm={}, kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
+def estimate_r(Y, X, r_max, c=1., family='poisson', disp_glm=None,
+    kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
     c1=None, intercept=0, offset=0, num_d=1, C=None, **kwargs
 ):
     '''
@@ -146,6 +156,10 @@ def estimate_r(Y, X, r_max, c=1.,
         Number of latent variables.
     c : float
         The constant factor for the complexity term.
+    family : str
+        The family of the GLM. Default is 'poisson'.
+    disp_glm : array-like, shape (1, p) or None
+        The dispersion parameter for the negative binomial distribution.
     kwargs_glm : dict
         Keyword arguments for the GLM.
     kwargs_ls_1 : dict
@@ -177,13 +191,22 @@ def estimate_r(Y, X, r_max, c=1.,
 
     if np.sum(np.any(Y!=0., axis=0))<Y.shape[1]:
         raise ValueError("Y contains non-expressed features.")
-                
+    
+    kwargs_glm = {}
+    kwargs_glm['family'] = family
+
+    if kwargs_glm['family']=='nb':
+        disp_glm = estimate_disp(Y, X)
+    if disp_glm is not None:
+        kwargs_glm['nuisance'] = disp_glm
+        
     # preprocess
     scale_factor = np.ones((1, X.shape[1]))
         
     d = X.shape[1]
     p = Y.shape[1]
     n = Y.shape[0]
+    
 
     kwargs_glm = {**{'family':'gaussian', 'nuisance':np.ones((1,p))}, **kwargs_glm}
 
@@ -192,13 +215,13 @@ def estimate_r(Y, X, r_max, c=1.,
 
     res = []
     if np.isscalar(r_max):
-        r_list = np.arange(1, r_max+1)
+        r_list = np.arange(1, int(r_max)+1)
     else:
-        r_list = np.array(r_max)
+        r_list = np.array(r_max, dtype=int)
     
     num_missing = np.zeros(2)
     for r in r_list:
-        _, _, _, A1, A2 = estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
+        _, _, _, A1, A2, _ = estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
             lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, **kwargs)
 
         logh = log_h(Y, kwargs_glm['family'], kwargs_glm['nuisance'])

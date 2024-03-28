@@ -8,6 +8,15 @@ from numba import njit, prange
 type_f = np.float64
 
 
+from scipy.special import xlogy, gammaln
+
+def log_h(y, family, nuisance):
+    if family=='nb':
+        return gammaln(y + nuisance) - gammaln(nuisance) - gammaln(y+1)
+    elif family=='poisson':
+        return - gammaln(y+1)
+
+
 @nb.vectorize
 def log1mexp(a):
     '''
@@ -33,7 +42,7 @@ def nll(Y, A, B, family, nuisance=np.ones((1,1))):
         The input data matrix.
     family : str, optional (default='gaussian')
         The family of the generalized linear model. Options include 'gaussian', 'binomial', 'poisson',
-        and 'negative_binomial'.
+        and 'nb'.
     nuisance : float or array-like of shape (n_samples,), optional (default=None)
         The nuisance parameter for the family. For the Gaussian family, this is the variance; for the Poisson
         family, this is the scaling factor; and for the negative binomial family, this is the overdispersion
@@ -56,9 +65,11 @@ def nll(Y, A, B, family, nuisance=np.ones((1,1))):
     elif family == 'gaussian':
         b = Theta**2/type_f(2.)
         Ty /= np.sqrt(nuisance)
-    elif family == 'negative_binomial':
-        Theta = np.clip(Theta, -np.inf, type_f(1e2))
-        b = - nuisance * np.log1p(np.exp(Theta))
+    elif family == 'nb':
+        Xi = np.clip(Theta, -np.inf, type_f(1e2))
+        tmp = np.clip(1 / (type_f(1.) + np.exp(Xi) / nuisance), 1e-6, 1-1e-6)
+        Theta = np.log1p(-tmp)
+        b = - nuisance * np.log(tmp)
     else:
         raise ValueError('Family not recognized')
     nll = - np.sum(Ty * Theta - b) / type_f(n)
@@ -84,7 +95,7 @@ def grad(Y, A, B, family, nuisance=np.ones((1,1)),
         The input data matrix.
     family : str, optional (default='gaussian')
         The family of the generalized linear model. Options include 'gaussian', 'binomial', 'poisson',
-        and 'negative_binomial'.
+        and 'nb'.
     nuisance : float or array-like of shape (n_samples,), optional (default=None)
         The nuisance parameter for the family. For the Gaussian family, this is the variance; for the Poisson
         family, this is the scaling factor; and for the negative binomial family, this is the overdispersion
@@ -98,7 +109,7 @@ def grad(Y, A, B, family, nuisance=np.ones((1,1)),
     Ty = Y.copy()
     n = Y.shape[0]
     
-    if family == 'negative_binomial':
+    if family == 'nb':
         Theta = np.clip(Theta, -np.inf, type_f(1e2))
         # grad with respect to theta
         b_p = np.exp(Theta) 
@@ -144,7 +155,7 @@ def hess(Y, Theta, family, nuisance=np.ones((1,1))):
         The natural parameter matrix.
     family : str, optional (default='gaussian')
         The family of the generalized linear model. Options include 'gaussian', 'binomial', 'poisson',
-        and 'negative_binomial'.
+        and 'nb'.
     nuisance : float or array-like of shape (n_samples,), optional (default=None)
         The nuisance parameter for the family. For the Gaussian family, this is the variance; for the Poisson
         family, this is the scaling factor; and for the negative binomial family, this is the overdispersion
@@ -164,7 +175,7 @@ def hess(Y, Theta, family, nuisance=np.ones((1,1))):
         b_pp = np.exp(Theta)
     elif family == 'gaussian':
         b_pp = np.ones_like(Theta)
-    elif family == 'negative_binomial':
+    elif family == 'nb':
         Theta = np.clip(Theta, -np.inf, type_f(1e2))
         b_pp = np.exp(Theta) / (type_f(1.) + np.exp(Theta) / nuisance)
     else:

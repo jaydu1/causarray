@@ -5,9 +5,6 @@ import scipy as sp
 from tqdm import tqdm
 from joblib import Parallel, delayed
 from collections import defaultdict
-import warnings
-warnings.filterwarnings('ignore')
-import pprint
 
 
 @njit
@@ -179,7 +176,7 @@ def update(Y, A, B, d, lam, P1, P2,
 
 def alter_min(
     Y, r, X=None, P1=None, P2=None, 
-    A=None, B=None, C=1e5,
+    A=None, B=None, C=None,
     kwargs_glm={}, kwargs_ls={}, kwargs_es={}, 
     lam=0., num_d=None, num_missing=None,
     intercept=1, offset=1, verbose=False):
@@ -220,7 +217,9 @@ def alter_min(
     if verbose:
         pprint.pprint({'kwargs_glm':kwargs_glm,'kwargs_ls':kwargs_ls,'kwargs_es':kwargs_es})
     family, nuisance = kwargs_glm['family'], kwargs_glm['nuisance'].astype(type_f)
-    
+    nuisance = nuisance.reshape(1,-1)
+    if C is None:
+        C = 1e3 if family=='nb' else 1e5
     
     d = X.shape[1]
     assert d>0
@@ -250,7 +249,8 @@ def alter_min(
             offset_arr = None if offset==0 else X[:,0]
             alpha = np.full(d-offset, 1e-8)
             alpha[:intercept] = 0.
-            B[:, offset:d] = fit_glm(Y, X[:,offset:], offset_arr, family, nuisance[0])
+            B[:, offset:d] = fit_glm(Y, X[:,offset:], method='glm',
+                offset=offset_arr, family=family, disp_glm=nuisance[0])[0]
             
             E = P1 @ E
         u, s, vh = sp.sparse.linalg.svds(E, k=r)        
@@ -304,7 +304,7 @@ def alter_min(
             pbar.set_postfix(nll='{:.02f}'.format(func_val))
     
     info = {'n_iter':t, 'func_val':func_val, 'resid':func_val_pre - func_val,
-           'hist':hist}
+           'hist':hist, 'kwargs_glm':kwargs_glm}
     return A, B, info
 
 
