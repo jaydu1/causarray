@@ -8,6 +8,31 @@ from numba import njit, prange
 type_f = np.float64
 
 
+
+from numba.extending import get_cython_function_address
+import ctypes
+
+_PTR = ctypes.POINTER
+_dble = ctypes.c_double
+_ptr_dble = _PTR(_dble)
+
+addr = get_cython_function_address("scipy.special.cython_special", "gammaln")
+functype = ctypes.CFUNCTYPE(_dble, _dble)
+gammaln_float64 = functype(addr)
+
+@nb.vectorize
+def gammaln_nb(x):
+  return gammaln_float64(x)
+
+# @njit
+# def gammaln_nb(A):
+#     out=np.empty(A.shape)
+#     for i in range(A.shape[0]):
+#         for j in range(A.shape[1]):
+#             out[i,j] = _gammaln_nb(A[i,j])
+#     return out  
+
+
 from scipy.special import xlogy, gammaln
 
 def log_h(y, family, nuisance):
@@ -67,9 +92,12 @@ def nll(Y, A, B, family, nuisance=np.ones((1,1))):
         Ty /= np.sqrt(nuisance)
     elif family == 'nb':
         Xi = np.clip(Theta, -np.inf, type_f(1e2))
-        tmp = np.clip(1 / (type_f(1.) + np.exp(Xi) / nuisance), 1e-6, 1-1e-6)
-        Theta = np.log1p(-tmp)
-        b = - nuisance * np.log(tmp)
+        exp_Xi = np.exp(Xi)
+        tmp = np.clip(1 / (type_f(1.) + exp_Xi / nuisance), 1e-6, 1-1e-6)
+        # Theta = np.log1p(-tmp)
+        # b = - nuisance * np.log(tmp)
+        Theta = np.where(nuisance>=10, Xi, np.log1p(-tmp))
+        b = np.where(nuisance>=10, exp_Xi, - nuisance * np.log(tmp) + gammaln_nb(nuisance+Y) - gammaln_nb(nuisance))
     else:
         raise ValueError('Family not recognized')
     nll = - np.sum(Ty * Theta - b) / type_f(n)

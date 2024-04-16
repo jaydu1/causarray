@@ -59,8 +59,10 @@ run_causarray <- function(Y, W, A, r, alpha=0.05, c=0.1, func='LFC', family='poi
     }
 
     causarray.df <- res[[1]]
+    rownames(causarray.df) <- colnames(Y)
     causarray.res <- res[[2]]
     causarray.res$Z <- Z
+    causarray.res$W <- Wp
 
     return(list('causarray.df'=causarray.df, 'causarray.res'=causarray.res))
 }
@@ -132,6 +134,21 @@ require(doParallel) # for parallel processing
 library(data.table)
 library(stringr)
 
+.check_input <- function(Y, metadata, indvs=NULL){
+  n_indvs <- length(unique(indvs))
+  n_meta <- dim(metadata)[1]
+  if (((dim(Y)[1] != n_meta) || (n_meta != n_meta)) && (length(indvs) != dim(Y)[1])) {
+    stop('Dimensions do not match for Y and metadata. Is Y individual x gene?')
+  } 
+  if (is.null(colnames(metadata))) {
+    stop('metadata must have column names.')
+  }
+  if (!('trt' %in% colnames(metadata))) {
+    stop('Treatment assignment column `trt` not in metadata.')
+  }
+
+}
+
 # Wilcoxon ----
 #' Function that runs Wilcoxon test on pseudo-bulk data (residuals from poisson regression)
 #' 
@@ -143,21 +160,8 @@ library(stringr)
 #' @returns Dataframe containing Wilcoxon statistic, p-value, and adjusted p-value for each gene
 #'
 run_wilcoxon <- function(Y, metadata, raw=F, family='poisson') {
+  .check_input(Y, metadata)
 
-  if (dim(Y)[1] != dim(metadata)[1]) {
-    stop('Dimensions do not match for Y and metadata. Is Y individual x gene?')
-  } 
-  if (is.null(colnames(metadata))) {
-    stop('metadata must have column names.')
-  }
-  if (!('trt' %in% colnames(metadata))) {
-    stop('Treatment assignment column `trt` not in metadata.')
-  }
-
-  # if (raw) {
-  #   Y <- sweep(Y,1,rowSums(Y),`/`)
-  #   Y <- log2((Y*10000)+1)
-  # } 
   loglibsize <- log2(rowSums(Y))
   intercept <- rep(1, nrow(Y))
   metadata <- cbind(intercept, metadata, loglibsize)
@@ -209,16 +213,8 @@ run_wilcoxon <- function(Y, metadata, raw=F, family='poisson') {
 #'
 run_DESeq <- function(Y, metadata, cooksCutoff=FALSE, independentFiltering=FALSE, return_ds=FALSE) {
   cat('Running DESeq... \n')
-
-  if (dim(Y)[1] != dim(metadata)[1]) {
-    stop('Dimensions do not match for Y and metadata. Is Y individual x gene?')
-  }
-  if (is.null(colnames(metadata))) {
-    stop('metadata must have column names.')
-  }
-  if (!('trt' %in% colnames(metadata))) {
-    stop('Treatment assignment column `trt` not in metadata.')
-  }
+  
+  .check_input(Y, metadata)
   
   t0 <- Sys.time()
   dds <- DESeqDataSetFromMatrix(countData = t(Y), 
@@ -290,8 +286,8 @@ fit_cocoa <- function(mtx.data, cell2indv, indv2trt) {
   
   cocoa_stats <- c()
   cocoa_pvals <- c()
-  for (gene in rownames(res.cocoa$resid.mu)) {
-    wilc <- wilcox.test(res.cocoa$resid.mu[gene, ] ~ res.cocoa$indv2exp$exp)
+  for (gene in rownames(res.cocoa$resid.ln.mu)) {
+    wilc <- wilcox.test(res.cocoa$resid.ln.mu[gene, ] ~ res.cocoa$indv2exp$exp)
     
     cocoa_stats <- c(cocoa_stats, wilc$statistic)
     cocoa_pvals <- c(cocoa_pvals, wilc$p.value)    
@@ -301,7 +297,7 @@ fit_cocoa <- function(mtx.data, cell2indv, indv2trt) {
                         'pvalue' = cocoa_pvals,
                         'padj' = cocoa_qvals)
   
-  rownames(df.cocoa) <- rownames(res.cocoa$resid.mu)
+  rownames(df.cocoa) <- rownames(res.cocoa$resid.ln.mu)
   
   return(list('cocoA.df'=df.cocoa,
               'cocoA.res'=res.cocoa))
@@ -311,20 +307,36 @@ fit_cocoa <- function(mtx.data, cell2indv, indv2trt) {
 #' Function that prepares and runs CocoA-Diff on single-cell data (prep_cocoa and fit_cocoa)
 #' 
 #' @param sc Single-cell gene expression matrix, cell x gene
-#' @param metadata Metadata dataframe containing trt column where 1 denotes treatment/case and 0 denotes control
+#' @param metadata Metadata dataframe (indv x cov) containing trt column where 1 denotes treatment/case and 0 denotes control
 #' @param indvs Individual names for each cell, default NULL
 #' @param cocoAWriteName File path denoting where to save files
 #' @returns List of CocoA-Diff results, `cocoA.df` dataframe contains Wilcoxon statistic, p-value, and adjusted p-value
 #'
-run_cocoa <- function(
-    sc, metadata, indvs = NULL, cocoAWriteName='simu/tmp'){
+run_cocoa <- function(sc, metadata, indvs = NULL, cocoAWriteName='simu/tmp'){
+
+    .check_input(sc, metadata, indvs)
 
     A <- metadata$trt
     if(is.null(indvs)){
         indvs <- 1:dim(sc)[1]
+        # indvs <- c()
+        # indv <- 1
+        # prev_trt <- A[1]
+        # for (trt_i in A) {
+        #     if (trt_i != prev_trt) {
+        #         indv <- indv + 1
+        #         prev_trt = trt_i
+        #     } 
+        #     # indvs <- c(indvs, paste0('indv', indv))
+        #     indvs <- c(indvs, indv)
+        # }
     }
-    cell2indv <- data.frame(cell=1:dim(sc)[1], indv=indvs)
-    indv2trt <- data.frame(indv=indvs[!duplicated(indvs)], exp=A)
+
+    cell2indv <- data.frame(cell=1:dim(sc)[1],#paste0('cell', 1:dim(sc)[1]), 
+                            indv=indvs)
+
+    indv2trt <- data.frame(indv=indvs[!duplicated(indvs)],
+                        exp=A)
 
     # prep_cocoa needs to take in a S4 matrix
     seuratY <- CreateSeuratObject(counts=sc, project = "simu", assay = "RNA",
@@ -337,8 +349,8 @@ run_cocoa <- function(
         s4Y <- seuratY@assays$RNA@counts # Seurat v4
     }
     
-    colnames(s4Y) <- 1:dim(sc)[2]
-    rownames(s4Y) <- 1:dim(sc)[1]
+    colnames(s4Y) <- 1:dim(sc)[2]#paste0('gene', 1:dim(sc)[2])
+    rownames(s4Y) <- 1:dim(sc)[1]#paste0('cell', 1:dim(sc)[1])
     mtx.data <- prep_cocoa(s4Y, cocoAWriteName)
 
     res.cocoa <- fit_cocoa(mtx.data, cell2indv, indv2trt)
@@ -346,4 +358,73 @@ run_cocoa <- function(
 }
 
 
+# library(ruvIIInb)
+library(SingleCellExperiment)
+library(DelayedArray)
 
+# RUV-III-NB ----
+#' Function that runs RUV-III-NB on single-cell data
+#' 
+#' @param Y Single-cell gene expression matrix,individual x gene
+#' @param metadata Metadata dataframe with all covariates including column called trt with 1 = treatment/case and 0 = control (factor),
+#'                 numeric features should be centered and scaled, all covariates in this dataframe will be used
+#' @param ctl Vector of gene names to be used as controls
+#' @param r The number of unmeasured confounders to be estimated.
+#' @returns Dataframe containing results from DESeq2 including test statistics, p-values, log2 fold changes, etc.
+#'
+run_ruv3nb <- function(Y, metadata, ctl, r, batch=NULL) {
+    cat('Running RUV... \n')
+
+    .check_input(Y, metadata)
+
+    t0 <- Sys.time()
+    sce <- SingleCellExperiment(assays=list(counts=t(Y)), colData=metadata)
+    rowData(sce)$ctlLogical <- ctl
+
+    # Perform initial clustering to identify pseudo-replicates
+    sce <- scran::computeSumFactors(sce,assay.type="counts")
+    data_norm_pre <- sweep(assays(sce)$counts,2,sce$sizeFactor,'/')
+    assays(sce, withDimnames=FALSE)$lognormcounts<- log(data_norm_pre+1)
+    snn_gr_init <- scran::buildSNNGraph(sce, assay.type = "lognormcounts")
+    clusters_init <- igraph::cluster_louvain(snn_gr_init)
+    sce$cluster_init <- factor(clusters_init$membership)
+
+    # Construct the replicate matrix M using pseudo-replicates identified using initial clustering
+    M <- matrix(0,ncol(assays(sce)$counts),length(unique(sce$cluster_init)))
+    cl <- sort(unique(as.numeric(unique(sce$cluster_init))))
+    for(CL in cl){M[which(as.numeric(sce$cluster_init)==CL),CL] <- 1}
+
+    #RUV-III-NB code
+    ruv3nb_out <- fastruvIII.nb(
+        Y=DelayedArray(assays(sce)$counts), # count matrix with genes as rows and cells as columns
+        M=M, #Replicate matrix constructed as above
+        ctl=rowData(sce)$ctlLogical, #A vector denoting control genes
+        k=r,
+        use.pseudosample=TRUE,
+        batch=batch,
+        ncores = 6
+    )
+
+    sce_ruv3nb <- makeSCE(ruv3nb_out, cData=colData(sce))
+
+    markers_ruv3nb <- scran::findMarkers(
+      x=as.matrix(assays(sce_ruv3nb)$logPAC),
+      groups=sce_ruv3nb$trt,
+      )
+
+    res.ruv3nb <- markers_ruv3nb[[2]]
+    res.ruv3nb <- res.ruv3nb[,-ncol(res.ruv3nb)]
+    rownames(res.ruv3nb) <- as.integer(rownames(res.ruv3nb))
+    res.ruv3nb <- res.ruv3nb[sort(rownames(res.ruv3nb)), ]
+    colnames(res.ruv3nb) <- c('top', 'pvalue', 'padj', 'stat')
+
+    t1 <- Sys.time()
+    print(t1-t0)
+
+    Z <- ruv3nb_out$W
+    W <- cbind(ruv3nb_out$M, ruv3nb_out$W)
+    
+    return(list('ruv3nb.df'=res.ruv3nb,
+                'ruv3nb.res'=list('Z'=Z, 'W'=W, 'sce'=sce_ruv3nb)))
+  
+}

@@ -1,9 +1,8 @@
 __all__ = ['ATE', 'SATE', 'FC', 'LFC',
-    'fit_glm', 'comp_stat', 'reset_random_seeds', 'fit_gcate']
+    'fit_glm', 'reset_random_seeds', 'fit_gcate']
 
 from causarray.DR_learner import ATE, SATE, FC, LFC
 from causarray.gcate_glm import fit_glm
-from causarray.DR_inference import comp_stat
 from causarray.utils import reset_random_seeds
 
 # from causarray.gcate_likelihood import *

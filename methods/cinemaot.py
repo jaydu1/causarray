@@ -9,7 +9,7 @@ from scipy.stats import wilcoxon
 from statsmodels.stats.multitest import multipletests
 
 
-def run_cinemaot(Y, A, raw=False, weighted=False,thres=0.15, smoothness=1e-3, **kwargs):
+def run_cinemaot(Y, A, raw=False, weighted=False, thres=0.15, smoothness=1e-3, **kwargs):
     '''
     The Python wrapper for running CINEMA-OT.
 
@@ -43,21 +43,37 @@ def run_cinemaot(Y, A, raw=False, weighted=False,thres=0.15, smoothness=1e-3, **
         sc.pp.log1p(adata)
         sc.pp.scale(adata, max_value=10)
     sc.pp.pca(adata)
-
-    de = np.zeros_like(Y)
-    for a in range(2):
-        if weighted:
-            _, _, _de = co.cinemaot.cinemaot_weighted(
-            adata, obs_label='A', ref_label=a, expr_label=1-a, thres=thres,
+    if weighted:
+        cf, ot, de, _ = co.cinemaot.cinemaot_weighted(
+            adata, obs_label='A', ref_label=0, expr_label=1,
             smoothness=smoothness, **kwargs)
-        else:
-            _, _, _de = co.cinemaot.cinemaot_unweighted(
-                adata, obs_label='A', ref_label=a, expr_label=1-a, thres=thres,
-                smoothness=smoothness, **kwargs)
-        de[A==a] = (2 * a - 1) * _de.X
+    else:
+        cf, ot, de = co.cinemaot.cinemaot_unweighted(
+            adata, obs_label='A', ref_label=0, expr_label=1,
+            smoothness=smoothness, **kwargs)
+    de = de.X
+    
+    # Y_hat_0 = Y.copy()
+    # Y_hat_1 = Y.copy()    
+    # for a in range(2):
+    #     if weighted:
+    #         _, ot, _de = co.cinemaot.cinemaot_weighted(
+    #         adata, obs_label='A', ref_label=a, expr_label=1-a,
+    #         smoothness=smoothness, **kwargs)
+    #     else:
+    #         _, ot, _de = co.cinemaot.cinemaot_unweighted(
+    #             adata, obs_label='A', ref_label=a, expr_label=1-a,
+    #             smoothness=smoothness, **kwargs)
+    #     if a==0:
+    #         Y_hat_0[A==a] = np.matmul(ot/np.sum(ot,axis=1)[:,None],Y[adata.obs['A']==1-a,:])
+    #         de = _de
+    #     else:
+    #         Y_hat_1[A==a] = np.matmul(ot/np.sum(ot,axis=1)[:,None],Y[adata.obs['A']==1-a,:])
+        # de[A==a] = (2 * a - 1) * _de.X
 
-    stat, pvalue = list(zip(*[wilcoxon(de[:,j]) for j in range(de.shape[1])]))
+    stat, pvalue = list(zip(*[wilcoxon(de[:,j],zero_method='zsplit') for j in range(de.shape[1])]))
+    # stat, pvalue = list(zip(*[wilcoxon((Y_hat_1-Y_hat_0)[:,j],zero_method='zsplit') for j in range(de.shape[1])]))
     padj = multipletests(pvalue, alpha=0.05, method='fdr_bh')[1]
 
     df = pd.DataFrame({'stat':stat, 'pvalue':pvalue, 'padj':padj})
-    return df, de
+    return {'cinemaot.df':df, 'cinemaot.res':{'W':cf, 'cf':np.log1p(Y[A==0]), 'de':de}}

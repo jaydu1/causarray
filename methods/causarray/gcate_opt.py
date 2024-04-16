@@ -7,34 +7,6 @@ from joblib import Parallel, delayed
 from collections import defaultdict
 
 
-@njit
-def proj_qp(A, b, max_iterations=1000, L=1.0, tolerance=1e-4):
-    m, n = A.shape
-    w = np.zeros(m)
-    y = np.zeros(m)
-    t = 1.0
-    L_inv = 1.0 / L
-
-    for i in range(max_iterations):
-        
-        w_prev = w.copy()
-        y_prev = y.copy()
-
-        u = A.T @ w
-        v = np.minimum(A @ u - L * w, b)
-
-        y = w - L_inv * (A @ u - v)
-        
-        
-        t_new = 0.5 * (1.0 + np.sqrt(1.0 + 4.0 * t**2))
-        w = y + (1.0 / L) * (t - 1) / t_new * (y - y_prev)
-
-        if np.linalg.norm(w - w_prev) < tolerance:
-            break
-
-        t = t_new
-    return A.T @ w
-
 
 @njit
 def project_l2_ball(X, radius):
@@ -124,15 +96,10 @@ def line_search(Y, A, x0, g, d, family, nuisance, intercept,
 @njit(parallel=True)
 def update(Y, A, B, d, lam, P1, P2,
           family, nuisance, C,
-          alpha, beta, max_iters, tol, offset, intercept, num_d, num_missing):
+          alpha, beta, max_iters, tol, offset, intercept, num_d):
     n, p = Y.shape
     
-    if num_missing[0]>0:
-        g = np.empty(A.shape, dtype=type_f)
-        g[:-num_missing[0],:] = grad(Y[:-num_missing[0],:].T, B, A[:-num_missing[0],:], family, nuisance.T)
-        g[-num_missing[0]:,:] = grad(Y[-num_missing[0]:,:-num_missing[1]].T, B[:-num_missing[1],:], A[-num_missing[0]:,:], family, nuisance[:-num_missing[1]].T)
-    else:
-        g = grad(Y.T, B, A, family, nuisance.T)
+    g = grad(Y.T, B, A, family, nuisance.T)
     g[:, :d] = 0.
     for i in prange(n):
         g[i, d:] = project_l2_ball(g[i, d:], 2*C)
@@ -143,12 +110,7 @@ def update(Y, A, B, d, lam, P1, P2,
         A[:, d:] = P1 @ A[:, d:]
     
     
-    if num_missing[0]>0:
-        g = np.empty(B.shape, dtype=type_f)
-        g[:-num_missing[1],:] = grad(Y[:,:-num_missing[1]], A, B[:-num_missing[1],:], family, nuisance[:-num_missing[1]])
-        g[-num_missing[1]:,:] = grad(Y[:-num_missing[0],-num_missing[1]:], A[:-num_missing[0],:], B[-num_missing[1]:,:], family, nuisance[-num_missing[1]:])
-    else:
-        g = grad(Y, A, B, family, nuisance)
+    g = grad(Y, A, B, family, nuisance)
     if P1 is not None:
         g[:, :d] = 0.
     elif P2 is not None:
@@ -176,10 +138,9 @@ def update(Y, A, B, d, lam, P1, P2,
 
 def alter_min(
     Y, r, X=None, P1=None, P2=None, 
-    A=None, B=None, C=None,
+    A=None, B=None,
     kwargs_glm={}, kwargs_ls={}, kwargs_es={}, 
-    lam=0., num_d=None, num_missing=None,
-    intercept=1, offset=1, verbose=False):
+    lam=0., num_d=None, intercept=1, offset=1, verbose=False, update_disp=False, C=1e5):
     '''
     Alternative minimization of latent factorization for generalized linear models.
 
@@ -196,7 +157,6 @@ def alter_min(
         kwargs_es (dict): Keyword arguments for the early stopping.
         lam (float): The regularization parameter for the l1 norm of the coefficients.
         num_d (int): The number of columns to be regularized. Assume the last 'num_d' columns of the covariates are the regularized coefficients. If 'num_d' is None, it is set to be 'd-offset-intercept' by default.
-        num_missing (ndarrary): The number of missing rows and columns in the response matrix. Assume the entries at the last 'num_missing[0]' rows and the last 'num_missing[1]' columns are missing. If 'num_missing' is None, it is set to be [0,0] by default.
         C (float): The maximum radius of the l2 norm of the gradient.
         intercept (int): The indicator of whether to include the intercept term in the covariates.
         offset (int): The indicator of whether to include the offset term in the covariates.
@@ -208,21 +168,26 @@ def alter_min(
         info (dict): A dictionary containing the information of the optimization.
     '''
     n, p = Y.shape
+    d = X.shape[1]
     
-    kwargs_glm = {**{'family':'gaussian', 'nuisance':np.ones((1,p))}, **kwargs_glm}
+    assert d>0
+    if verbose:
+        pprint.pprint({'n':n,'p':p,'d':d,'r':r})
+
+    kwargs_glm = {**{'family':'gaussian', 'nuisance':np.ones(p)}, **kwargs_glm}
     kwargs_ls = {**{'alpha':0.1, 'beta':0.5, 'max_iters':20, 'tol':1e-4}, **kwargs_ls}
     kwargs_es = {**{'max_iters':500, 'warmup':5, 'patience':20, 'tolerance':1e-4}, **kwargs_es}
     
     
     if verbose:
         pprint.pprint({'kwargs_glm':kwargs_glm,'kwargs_ls':kwargs_ls,'kwargs_es':kwargs_es})
+    
     family, nuisance = kwargs_glm['family'], kwargs_glm['nuisance'].astype(type_f)
     nuisance = nuisance.reshape(1,-1)
-    if C is None:
-        C = 1e3 if family=='nb' else 1e5
-    
-    d = X.shape[1]
-    assert d>0
+
+    # if C is None:
+    #     C = 1e3 if family=='nb' else 1e5
+
     if P1 is True:
         Q, _ = sp.linalg.qr(X[:,offset:], mode='economic')
         P1 = np.identity(n) - Q @ Q.T
@@ -230,12 +195,8 @@ def alter_min(
             
     if num_d is None:
         num_d = d-offset-intercept
-
-    if num_missing is None:
-        num_missing = np.array([0,0])
         
-    if verbose:
-        pprint.pprint({'n':n,'p':p,'d':d,'r':r})
+    
 
     # initialization for Theta = A @ B^T
     if A is None or B is None:
@@ -249,7 +210,7 @@ def alter_min(
             offset_arr = None if offset==0 else X[:,0]
             alpha = np.full(d-offset, 1e-8)
             alpha[:intercept] = 0.
-            B[:, offset:d] = fit_glm(Y, X[:,offset:], method='glm',
+            B[:, offset:d] = fit_glm(Y, X[:,offset:],
                 offset=offset_arr, family=family, disp_glm=nuisance[0])[0]
             
             E = P1 @ E
@@ -271,6 +232,8 @@ def alter_min(
         A[:, d:] = u * s[None,:]**(1/2)
         B[:, d:] = vh.T * s[None,:]**(1/2)
         del E, u, s, vh
+
+    
                 
     Y = Y.astype(type_f)
     A = A.astype(type_f)
@@ -289,7 +252,7 @@ def alter_min(
                 Y, A, B, d, lam, P1, P2,
                 family, nuisance, C,
                 kwargs_ls['alpha'], kwargs_ls['beta'], kwargs_ls['max_iters'], kwargs_ls['tol'], 
-                offset,intercept,num_d,num_missing
+                offset,intercept,num_d
             )
             func_val = func_val/p + lam * np.mean(np.abs(B[:,d-num_d:d]))
             hist.append(func_val)
@@ -297,12 +260,17 @@ def alter_min(
                 print('Encountered large or infinity values. Try to decrease the value of C for the norm constraints.')
                 break
             elif es(func_val):
-                print('Early stopped.')
+                pbar.set_postfix_str('Early stopped.' + es.info)
+                pbar.close()                
                 break
             else:
                 func_val_pre = func_val
             pbar.set_postfix(nll='{:.02f}'.format(func_val))
-    
+
+            if update_disp and family=='nb' and t > es.warmup:
+                nuisance = estimate_disp(Y, Y_hat=np.exp(A @ B.T)).reshape(1,-1)
+
+    kwargs_glm['nuisance'] = nuisance[0]
     info = {'n_iter':t, 'func_val':func_val, 'resid':func_val_pre - func_val,
            'hist':hist, 'kwargs_glm':kwargs_glm}
     return A, B, info

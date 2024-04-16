@@ -104,23 +104,3 @@ def augmentation(V, tvalues, c):
     return V
 
 
-def comp_stat(true, pred, c):
-    true = np.array(true).flatten()
-    pred = np.array(pred).flatten()
-
-    # type I error
-    typeI_err = np.sum(true[pred==1]==0)/np.sum(true==0)
-
-    # false discovery proportion
-    FDP = np.sum(true[pred==1]==0)/np.sum(pred==1)
-
-    # power
-    power = np.sum(true[pred==1]==1)/np.sum(true==1)
-
-    # false discovery rate exceedance
-    FDPex = (FDP > c).astype(int)
-
-    # number of discoveries
-    num_dis = np.sum(pred==1)
-
-    return [typeI_err, FDP, power, FDPex, num_dis]

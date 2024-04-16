@@ -81,7 +81,7 @@ def ATE(
         'qvals': qvals
         })
 
-    estimation = {'pi':pi, 'Y_hat_0':Y_hat_0, 'Y_hat_1':Y_hat_1}
+    estimation = {**{'pi':pi, 'Y_hat_0':Y_hat_0, 'Y_hat_1':Y_hat_1}, **kwargs}
     return df_res, estimation
 
 
@@ -164,7 +164,7 @@ def SATE(
         'padj': qvals
         })
 
-    estimation = {'pi':pi, 'Y_hat_0':Y_hat_0, 'Y_hat_1':Y_hat_1}
+    estimation = {**{'pi':pi, 'Y_hat_0':Y_hat_0, 'Y_hat_1':Y_hat_1}, **kwargs}
     return df_res, estimation
 
 
@@ -261,7 +261,7 @@ def FC(
         'padj': qvals
         })
 
-    estimation = {'pi':pi, 'Y_hat_0':Y_hat_0, 'Y_hat_1':Y_hat_1}
+    estimation = {**{'pi':pi, 'Y_hat_0':Y_hat_0, 'Y_hat_1':Y_hat_1}, **kwargs}
     return df_res, estimation
 
 
@@ -362,5 +362,5 @@ def LFC(
         'padj': qvals
         })
 
-    estimation = {'pi':pi, 'Y_hat_0':Y_hat_0, 'Y_hat_1':Y_hat_1}
+    estimation = {**{'pi':pi, 'Y_hat_0':Y_hat_0, 'Y_hat_1':Y_hat_1}, **kwargs}
     return df_res, estimation

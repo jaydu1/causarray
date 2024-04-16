@@ -4,7 +4,7 @@ import pandas as pd
 
 def fit_gcate(Y, X, r, family='poisson', disp_glm=None,
     kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
-    c1=None, intercept=0, offset=0, num_d=1, C=None, verbose=False, **kwargs
+    c1=None, intercept=0, offset=0, num_d=1, verbose=False, **kwargs
 ):
     '''
     Parameters
@@ -52,8 +52,6 @@ def fit_gcate(Y, X, r, family='poisson', disp_glm=None,
     if disp_glm is not None:
         kwargs_glm['nuisance'] = disp_glm
 
-    # preprocess
-    scale_factor = np.ones((1, X.shape[1]))
         
     d = X.shape[1]
     p = Y.shape[1]
@@ -64,16 +62,14 @@ def fit_gcate(Y, X, r, family='poisson', disp_glm=None,
     c1 = 0.02 if c1 is None else c1
     lam1 = c1 * np.sqrt(np.log(p)/n)
 
-    num_missing = np.zeros(2)
-
-    _, _, P_Gamma, A1, A2, info = estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
-        lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, verbose)
+    _, _, P_Gamma, A1, A2, info = estimate(Y, X, r, intercept, offset, num_d, 
+        lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, verbose, **kwargs)
         
     return A1, A2, info
 
 
-def estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
-    lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, verbose=False):
+def estimate(Y, X, r, intercept, offset, num_d, lam1, 
+    kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, verbose=False, **kwargs):
     '''
     Two-stage estimation of the GCATE model.
 
@@ -91,10 +87,6 @@ def estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
         Whether to include offset in the model.
     num_d : int
         The number of columns to be regularized. Assume the last 'num_d' columns of the covariates are the regularized coefficients. If 'num_d' is None, it is set to be 'd-offset-intercept' by default.
-    C : float
-        The gradients are preojected to the L2-norm ball with radius 2C for two optimization problems.
-    num_missing : array-like, shape (2,)
-        The number of missing data for the first and second optimization problems.
     lam1 : float
         Regularization parameter for the first optimization problem.
     kwargs_glm : dict
@@ -127,21 +119,24 @@ def estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
     p = Y.shape[1]    
 
     A01, A02, info = alter_min(
-        Y, r, X=X, P1=True, intercept=intercept, offset=offset, C=C, num_missing=num_missing,
-        kwargs_glm=kwargs_glm, kwargs_ls=kwargs_ls_1, kwargs_es=kwargs_es_1, verbose=verbose)
+        Y, r, X=X, P1=True, intercept=intercept, offset=offset,
+        kwargs_glm=kwargs_glm, kwargs_ls=kwargs_ls_1, kwargs_es=kwargs_es_1, verbose=verbose, update_disp=True, **kwargs)
     Q, _ = sp.linalg.qr(A02[:,d:], mode='economic')
     P_Gamma = np.identity(p) - Q @ Q.T
 
+    # A1 = A01.copy()
+    # A1[:,d:] += A01[:,:d] @ np.linalg.solve(A02[:,d:].T @ A02[:,d:], A02[:,d:].T @ A02[:,:d]).T
+    # A2 = A02.copy()
     A1, A2, info = alter_min(
         Y, r, X=X, P2=P_Gamma, A=A01.copy(), B=A02.copy(), lam=lam1, 
-        intercept=intercept, offset=offset, num_d=num_d, C=C, num_missing=num_missing,
-        kwargs_glm=kwargs_glm, kwargs_ls=kwargs_ls_2, kwargs_es=kwargs_es_2, verbose=verbose)
+        intercept=intercept, offset=offset, num_d=num_d,
+        kwargs_glm=info['kwargs_glm'], kwargs_ls=kwargs_ls_2, kwargs_es=kwargs_es_2, verbose=verbose, **kwargs)
     return A01, A02, P_Gamma, A1, A2, info
 
 
 def estimate_r(Y, X, r_max, c=1., family='poisson', disp_glm=None,
     kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
-    c1=None, intercept=0, offset=0, num_d=1, C=None, **kwargs
+    c1=None, intercept=0, offset=0, num_d=1, **kwargs
 ):
     '''
     Estimate the number of latent factors for the GCATE model.
@@ -178,8 +173,6 @@ def estimate_r(Y, X, r_max, c=1., family='poisson', disp_glm=None,
         Whether to include offset in the model.
     num_d : int
         Number of latent variables.
-    C : float
-        The gradients are preojected to the L2-norm ball with radius 2C for two optimization problems.
 
     Returns
     -------
@@ -192,6 +185,11 @@ def estimate_r(Y, X, r_max, c=1., family='poisson', disp_glm=None,
     if np.sum(np.any(Y!=0., axis=0))<Y.shape[1]:
         raise ValueError("Y contains non-expressed features.")
     
+    d = X.shape[1]
+    p = Y.shape[1]
+    n = Y.shape[0]
+    Y = Y.astype(type_f)
+
     kwargs_glm = {}
     kwargs_glm['family'] = family
 
@@ -199,15 +197,7 @@ def estimate_r(Y, X, r_max, c=1., family='poisson', disp_glm=None,
         disp_glm = estimate_disp(Y, X)
     if disp_glm is not None:
         kwargs_glm['nuisance'] = disp_glm
-        
-    # preprocess
-    scale_factor = np.ones((1, X.shape[1]))
-        
-    d = X.shape[1]
-    p = Y.shape[1]
-    n = Y.shape[0]
-    
-
+            
     kwargs_glm = {**{'family':'gaussian', 'nuisance':np.ones((1,p))}, **kwargs_glm}
 
     c1 = 0.1 if c1 is None else c1
@@ -218,13 +208,20 @@ def estimate_r(Y, X, r_max, c=1., family='poisson', disp_glm=None,
         r_list = np.arange(1, int(r_max)+1)
     else:
         r_list = np.array(r_max, dtype=int)
-    
-    num_missing = np.zeros(2)
+        
     for r in r_list:
-        _, _, _, A1, A2, _ = estimate(Y, X, r, intercept, offset, num_d, C, num_missing,
+        A01, A02, _, A1, A2, _ = estimate(Y, X, r, intercept, offset, num_d,
             lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, **kwargs)
 
         logh = log_h(Y, kwargs_glm['family'], kwargs_glm['nuisance'])
+
+        if r==1:
+            ll = 2 * ( 
+                nll(Y, A01, A02, kwargs_glm['family'], kwargs_glm['nuisance']) / p 
+                - np.sum(logh) / (n*p) ) 
+            nu = d * np.maximum(n,p) * np.log(n * p / np.maximum(n,p)) / (n*p)
+            jic = ll + c * nu
+            res.append([0, ll, nu, jic])
         
         ll = 2 * ( 
             nll(Y, A1, A2, kwargs_glm['family'], kwargs_glm['nuisance']) / p 

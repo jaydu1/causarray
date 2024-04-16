@@ -32,6 +32,7 @@ class Early_Stopping():
             self.factor = -1.0
         else:
             self.factor = 1.0
+        self.info = None
 
     def __call__(self, metric):
         self.step += 1
@@ -43,7 +44,7 @@ class Early_Stopping():
             self.best_step = self.step
             return False
         elif self.step - self.best_step>self.patience:
-            print('Best Epoch: %d. Best Metric: %f.'%(self.best_step, self.best_metric))
+            self.info = 'Best Epoch: %d. Best Metric: %f.'%(self.best_step, self.best_metric)
             return True
         else:
             return False

@@ -50,7 +50,7 @@ def AIPW_mean(y, A, mu, pi, pseudo_outcome=False, positive=False):
 from sklearn.model_selection import KFold
 
 def cross_fitting(
-    Y, X, A, X_A, family='poisson', K=1, 
+    Y, X, A, X_A=None, family='poisson', K=1, 
     ps_model='logistic', verbose=False, **kwargs):
     '''
     Cross-fitting for causal estimands.
@@ -133,7 +133,7 @@ def cross_fitting(
 
         # Fit GLM on training data and predict on test data
         res = fit_glm(Y_train, X_train, A_train, family=family, alpha=1e-4,
-            method='glm', disp_glm=disp_glm, impute=X_test)
+            disp_glm=disp_glm, impute=X_test)
         
         # Store results
         pi_arr[test_index] = pi
