@@ -55,11 +55,14 @@ def fit_glm(Y, X, A=None, family='gaussian',
     else:
         X = np.c_[X,A]
 
-    if offset:
-        offsets = np.log(np.sum(Y, axis=1))
+    if offset is not None and offset is not False:
+        if type(offset)==bool and offset is True:
+            offsets = np.log(np.sum(Y, axis=1))
+        else:
+            offsets = offset
     else:
         offsets = None
-    
+
     # estimate dispersion parameter for negative binomial GLM if not provided
     if family=='nb' and disp_glm is None:
         disp_glm = estimate_disp(Y, X, A)       
@@ -77,7 +80,7 @@ def fit_glm(Y, X, A=None, family='gaussian',
         X_test = X[:,:-1]
 
 
-    def fit_model(j, Y, X, offsets, family, disp, d, impute, alpha):        
+    def fit_model(j, Y, X, offsets, family, disp, d, impute, alpha):
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore")

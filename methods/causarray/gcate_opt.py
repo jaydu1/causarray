@@ -29,7 +29,7 @@ def project_l2_ball(X, radius):
 
 
 @njit
-def line_search(Y, A, x0, g, d, family, nuisance, intercept,
+def line_search(Y, A, x0, g, d, family, nuisance, offset, start,
                 lam=0., alpha=1., beta=0.5, max_iters=100, tol=1e-3, 
                 ):
     """
@@ -49,9 +49,9 @@ def line_search(Y, A, x0, g, d, family, nuisance, intercept,
     """
 
     # Evaluate the function at the starting point.
-    f0 = nll(Y, A, x0, family, nuisance)
+    f0 = nll(Y, A, x0, family, nuisance, offset)
     if lam>0.:
-        f0 += lam * np.sum(np.abs(x0[intercept:d]))
+        f0 += lam * np.sum(np.abs(x0[start:d]))
     
     # Initialize the step size.    
     alpha = type_f(alpha)
@@ -65,12 +65,12 @@ def line_search(Y, A, x0, g, d, family, nuisance, intercept,
         # Compute the new point.
         x1 = x0 - t*g
         if lam>0.:
-            x1[intercept:d] = np.sign(x1[intercept:d]) * np.maximum(np.abs(x1[intercept:d]) - lam, type_f(0.))
+            x1[start:d] = np.sign(x1[start:d]) * np.maximum(np.abs(x1[start:d]) - lam, type_f(0.))
         
         # Evaluate the function at the new point.
-        f1 = nll(Y, A, x1, family, nuisance) 
+        f1 = nll(Y, A, x1, family, nuisance, offset) 
         if lam>0.:
-            f1 += lam * np.sum(np.abs(x1[intercept:d]))
+            f1 += lam * np.sum(np.abs(x1[start:d]))
         if i==0:
             f01 = f1
 
@@ -85,7 +85,7 @@ def line_search(Y, A, x0, g, d, family, nuisance, intercept,
     if f01<2*f1:
         x1 = x0 - alpha*g
         if lam>0.:
-            x1[intercept:d] = np.sign(x1[intercept:d]) * np.maximum(np.abs(x1[intercept:d]) - lam, type_f(0.))
+            x1[start:d] = np.sign(x1[start:d]) * np.maximum(np.abs(x1[start:d]) - lam, type_f(0.))
     return x1
 
 
@@ -95,22 +95,22 @@ def line_search(Y, A, x0, g, d, family, nuisance, intercept,
 
 @njit(parallel=True)
 def update(Y, A, B, d, lam, P1, P2,
-          family, nuisance, C,
-          alpha, beta, max_iters, tol, offset, intercept, num_d):
+          family, nuisance, offset, num_d, C,
+          alpha, beta, max_iters, tol):
     n, p = Y.shape
     
-    g = grad(Y.T, B, A, family, nuisance.T)
+    g = grad(Y.T, B, A, family, nuisance.T, offset.T)
     g[:, :d] = 0.
     for i in prange(n):
         g[i, d:] = project_l2_ball(g[i, d:], 2*C)
         A[i, :] = line_search(Y[i, :].T, B, A[i, :], g[i, :], d, 
-                              family, nuisance[0], intercept,
-                          type_f(0.), alpha, beta, max_iters, tol)
+                              family, nuisance[0], offset[i,:], 0, 
+                              type_f(0.), alpha, beta, max_iters, tol)
     if P1 is not None:
         A[:, d:] = P1 @ A[:, d:]
     
     
-    g = grad(Y, A, B, family, nuisance)
+    g = grad(Y, A, B, family, nuisance, offset)
     if P1 is not None:
         g[:, :d] = 0.
     elif P2 is not None:
@@ -125,13 +125,13 @@ def update(Y, A, B, d, lam, P1, P2,
             g[j, :d] = project_l2_ball(g[j, :d], 2*C)
 
         B[j, :] = line_search(Y[:, j], A, B[j, :], g[j, :], d, 
-                              family, nuisance[:,j], d-num_d,
+                              family, nuisance[:,j], offset, d-num_d,
                               lam, alpha, beta, max_iters, tol
                              )
 
     if P2 is None:
         B[:, d:] = np.clip(B[:, d:], -10., 10.)
-    func_val = nll(Y, A, B, family, nuisance)
+    func_val = nll(Y, A, B, family, nuisance, offset)
 
     return func_val, A, B
 
@@ -140,7 +140,7 @@ def alter_min(
     Y, r, X=None, P1=None, P2=None, 
     A=None, B=None,
     kwargs_glm={}, kwargs_ls={}, kwargs_es={}, 
-    lam=0., num_d=None, intercept=1, offset=1, verbose=False, update_disp=False, C=1e5):
+    lam=0., num_d=None, verbose=False, update_disp=False, C=1e5):
     '''
     Alternative minimization of latent factorization for generalized linear models.
 
@@ -156,10 +156,8 @@ def alter_min(
         kwargs_ls (dict): Keyword arguments for the line search.
         kwargs_es (dict): Keyword arguments for the early stopping.
         lam (float): The regularization parameter for the l1 norm of the coefficients.
-        num_d (int): The number of columns to be regularized. Assume the last 'num_d' columns of the covariates are the regularized coefficients. If 'num_d' is None, it is set to be 'd-offset-intercept' by default.
+        num_d (int): The number of columns to be regularized. Assume the last 'num_d' columns of the covariates are the regularized coefficients. If 'num_d' is None, it is set to be 'd-offset' by default.
         C (float): The maximum radius of the l2 norm of the gradient.
-        intercept (int): The indicator of whether to include the intercept term in the covariates.
-        offset (int): The indicator of whether to include the offset term in the covariates.
         verbose (bool): The indicator of whether to print the progress.
 
     Returns:
@@ -174,7 +172,7 @@ def alter_min(
     if verbose:
         pprint.pprint({'n':n,'p':p,'d':d,'r':r})
 
-    kwargs_glm = {**{'family':'gaussian', 'nuisance':np.ones(p)}, **kwargs_glm}
+    kwargs_glm = {**{'family':'gaussian', 'nuisance':np.ones(p), 'offset':np.ones(n)}, **kwargs_glm}
     kwargs_ls = {**{'alpha':0.1, 'beta':0.5, 'max_iters':20, 'tol':1e-4}, **kwargs_ls}
     kwargs_es = {**{'max_iters':500, 'warmup':5, 'patience':20, 'tolerance':1e-4}, **kwargs_es}
     
@@ -182,19 +180,20 @@ def alter_min(
     if verbose:
         pprint.pprint({'kwargs_glm':kwargs_glm,'kwargs_ls':kwargs_ls,'kwargs_es':kwargs_es})
     
-    family, nuisance = kwargs_glm['family'], kwargs_glm['nuisance'].astype(type_f)
+    family, nuisance, offset = kwargs_glm['family'], kwargs_glm['nuisance'].astype(type_f), kwargs_glm['offset'].astype(type_f)
     nuisance = nuisance.reshape(1,-1)
+    offset = offset.reshape(-1,1)
 
     # if C is None:
     #     C = 1e3 if family=='nb' else 1e5
 
     if P1 is True:
-        Q, _ = sp.linalg.qr(X[:,offset:], mode='economic')
+        Q, _ = sp.linalg.qr(X, mode='economic')
         P1 = np.identity(n) - Q @ Q.T
         P1 = P1.astype(type_f)
             
     if num_d is None:
-        num_d = d-offset-intercept
+        num_d = d
         
     
 
@@ -206,23 +205,18 @@ def alter_min(
         
         if d>0:
             A = np.c_[X, A]
-            
-            offset_arr = None if offset==0 else X[:,0]
-            alpha = np.full(d-offset, 1e-8)
-            alpha[:intercept] = 0.
-            B[:, offset:d] = fit_glm(Y, X[:,offset:],
-                offset=offset_arr, family=family, disp_glm=nuisance[0])[0]
-            
+            B[:, :d] = fit_glm(Y, X,
+                offset=np.log(offset[:,0]), family=family, disp_glm=nuisance[0])[0]
             E = P1 @ E
         u, s, vh = sp.sparse.linalg.svds(E, k=r)        
         A[:, d:] = u * s[None,:]**(1/2)
         B[:, d:] = vh.T * s[None,:]**(1/2)
         del E, u, s, vh
 
-        if offset==1:
-            scale = np.sqrt(np.median(np.abs(X[:,0])))
-            B[:, :offset] = scale
-            A[:, :offset] /= scale 
+        # if offset==1:
+        #     scale = np.sqrt(np.median(np.abs(X[:,0])))
+        #     B[:, :offset] = scale
+        #     A[:, :offset] /= scale 
 
     if P2 is not None:  
         P2 = P2.astype(type_f)
@@ -243,16 +237,15 @@ def alter_min(
     assert ~np.any(np.isnan(A))
     assert ~np.any(np.isnan(B))
     
-    func_val_pre = nll(Y, A, B, family, nuisance)/p + lam * np.mean(np.abs(B[:,d-num_d:d]))
+    func_val_pre = nll(Y, A, B, family, nuisance, offset)/p + lam * np.mean(np.abs(B[:,d-num_d:d]))
     hist = [func_val_pre]
     es = Early_Stopping(**kwargs_es)
     with tqdm(np.arange(kwargs_es['max_iters'])) as pbar:
         for t in pbar:
             func_val, A, B = update(
                 Y, A, B, d, lam, P1, P2,
-                family, nuisance, C,
+                family, nuisance, offset, num_d, C,
                 kwargs_ls['alpha'], kwargs_ls['beta'], kwargs_ls['max_iters'], kwargs_ls['tol'], 
-                offset,intercept,num_d
             )
             func_val = func_val/p + lam * np.mean(np.abs(B[:,d-num_d:d]))
             hist.append(func_val)

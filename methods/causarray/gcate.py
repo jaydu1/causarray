@@ -2,9 +2,9 @@ from causarray.gcate_opt import *
 import pandas as pd
 
 
-def fit_gcate(Y, X, r, family='poisson', disp_glm=None,
+def fit_gcate(Y, X, r, family='poisson', disp_glm=None, offset=None,
     kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
-    c1=None, intercept=0, offset=0, num_d=1, verbose=False, **kwargs
+    c1=None, num_d=1, verbose=False, **kwargs
 ):
     '''
     Parameters
@@ -17,8 +17,10 @@ def fit_gcate(Y, X, r, family='poisson', disp_glm=None,
         The number of unmeasured confounders.
     family : str
         The family of the GLM. Default is 'poisson'.
-    disp_glm : array-like, shape (1, p) or None
+    disp_glm : array-like, shape (p, ) or None
         The dispersion parameter for the negative binomial distribution.
+    offset : array-like, shape (p, ) or None
+        The offset parameter.
     kwargs_ls_1 : dict
         Keyword arguments for the line search solver in the first phrase.
     kwargs_ls_2 : dict
@@ -29,10 +31,6 @@ def fit_gcate(Y, X, r, family='poisson', disp_glm=None,
         Keyword arguments for the early stopper in the second phrase.
     c1 : float
         The regularization constant in the first phrase. Default is 0.1.
-    intercept : int
-        Whether to include intercept in the model. Default is 0.
-    offset : int
-        Whether to use offset in the model. Default is 0.
     num_d : int
         The number of covariates to be regularized. Assume the last num_d covariates are to be regularized. Default is 1.
     C : float
@@ -51,7 +49,10 @@ def fit_gcate(Y, X, r, family='poisson', disp_glm=None,
         disp_glm = estimate_disp(Y, X)
     if disp_glm is not None:
         kwargs_glm['nuisance'] = disp_glm
-
+    if offset is not None:
+        if type(offset)==bool and offset is True:
+            offset = comp_size_factor(Y, **kwargs)
+        kwargs_glm['offset'] = offset
         
     d = X.shape[1]
     p = Y.shape[1]
@@ -62,13 +63,13 @@ def fit_gcate(Y, X, r, family='poisson', disp_glm=None,
     c1 = 0.02 if c1 is None else c1
     lam1 = c1 * np.sqrt(np.log(p)/n)
 
-    _, _, P_Gamma, A1, A2, info = estimate(Y, X, r, intercept, offset, num_d, 
+    _, _, P_Gamma, A1, A2, info = estimate(Y, X, r, num_d, 
         lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, verbose, **kwargs)
         
     return A1, A2, info
 
 
-def estimate(Y, X, r, intercept, offset, num_d, lam1, 
+def estimate(Y, X, r, num_d, lam1, 
     kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, verbose=False, **kwargs):
     '''
     Two-stage estimation of the GCATE model.
@@ -80,13 +81,9 @@ def estimate(Y, X, r, intercept, offset, num_d, lam1,
     X : array-like, shape (n, d)
         Observed covariate matrix.
     r : int
-        Number of latent variables.    
-    intercept : int
-        Whether to include intercept in the model.
-    offset : int
-        Whether to include offset in the model.
+        Number of latent variables.
     num_d : int
-        The number of columns to be regularized. Assume the last 'num_d' columns of the covariates are the regularized coefficients. If 'num_d' is None, it is set to be 'd-offset-intercept' by default.
+        The number of columns to be regularized. Assume the last 'num_d' columns of the covariates are the regularized coefficients. If 'num_d' is None, it is set to be 'd' by default.
     lam1 : float
         Regularization parameter for the first optimization problem.
     kwargs_glm : dict
@@ -119,7 +116,7 @@ def estimate(Y, X, r, intercept, offset, num_d, lam1,
     p = Y.shape[1]    
 
     A01, A02, info = alter_min(
-        Y, r, X=X, P1=True, intercept=intercept, offset=offset,
+        Y, r, X=X, P1=True,
         kwargs_glm=kwargs_glm, kwargs_ls=kwargs_ls_1, kwargs_es=kwargs_es_1, verbose=verbose, update_disp=True, **kwargs)
     Q, _ = sp.linalg.qr(A02[:,d:], mode='economic')
     P_Gamma = np.identity(p) - Q @ Q.T
@@ -128,15 +125,14 @@ def estimate(Y, X, r, intercept, offset, num_d, lam1,
     # A1[:,d:] += A01[:,:d] @ np.linalg.solve(A02[:,d:].T @ A02[:,d:], A02[:,d:].T @ A02[:,:d]).T
     # A2 = A02.copy()
     A1, A2, info = alter_min(
-        Y, r, X=X, P2=P_Gamma, A=A01.copy(), B=A02.copy(), lam=lam1, 
-        intercept=intercept, offset=offset, num_d=num_d,
+        Y, r, X=X, P2=P_Gamma, A=A01.copy(), B=A02.copy(), lam=lam1, num_d=num_d,
         kwargs_glm=info['kwargs_glm'], kwargs_ls=kwargs_ls_2, kwargs_es=kwargs_es_2, verbose=verbose, **kwargs)
     return A01, A02, P_Gamma, A1, A2, info
 
 
-def estimate_r(Y, X, r_max, c=1., family='poisson', disp_glm=None,
+def estimate_r(Y, X, r_max, c=1., family='poisson', disp_glm=None, offset=None,
     kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
-    c1=None, intercept=0, offset=0, num_d=1, **kwargs
+    c1=None, num_d=1, **kwargs
 ):
     '''
     Estimate the number of latent factors for the GCATE model.
@@ -167,10 +163,6 @@ def estimate_r(Y, X, r_max, c=1., family='poisson', disp_glm=None,
         Keyword arguments of the early stopping monitor for the second optimization problem.
     c1 : float
         Regularization parameter for the second optimization problem.
-    intercept : int
-        Whether to include intercept in the model.
-    offset : int
-        Whether to include offset in the model.
     num_d : int
         Number of latent variables.
 
@@ -197,8 +189,13 @@ def estimate_r(Y, X, r_max, c=1., family='poisson', disp_glm=None,
         disp_glm = estimate_disp(Y, X)
     if disp_glm is not None:
         kwargs_glm['nuisance'] = disp_glm
+    if offset is not None:
+        if type(offset)==bool and offset is True:
+            offset = comp_size_factor(Y, **kwargs)
+        kwargs_glm['offset'] = offset
             
-    kwargs_glm = {**{'family':'gaussian', 'nuisance':np.ones((1,p))}, **kwargs_glm}
+    kwargs_glm = {**{'family':'gaussian', 'nuisance':np.ones((1,p)), 'offset':np.ones((n,1))}, **kwargs_glm}
+    family, nuisance, offset = kwargs_glm['family'], kwargs_glm['nuisance'], kwargs_glm['offset']
 
     c1 = 0.1 if c1 is None else c1
     lam1 = c1 * np.sqrt(np.log(p)/n)
@@ -210,21 +207,21 @@ def estimate_r(Y, X, r_max, c=1., family='poisson', disp_glm=None,
         r_list = np.array(r_max, dtype=int)
         
     for r in r_list:
-        A01, A02, _, A1, A2, _ = estimate(Y, X, r, intercept, offset, num_d,
+        A01, A02, _, A1, A2, _ = estimate(Y, X, r, num_d,
             lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, **kwargs)
 
-        logh = log_h(Y, kwargs_glm['family'], kwargs_glm['nuisance'])
+        logh = log_h(Y, family, nuisance)
 
         if r==1:
             ll = 2 * ( 
-                nll(Y, A01, A02, kwargs_glm['family'], kwargs_glm['nuisance']) / p 
+                nll(Y, A01, A02, family, nuisance, offset) / p 
                 - np.sum(logh) / (n*p) ) 
             nu = d * np.maximum(n,p) * np.log(n * p / np.maximum(n,p)) / (n*p)
             jic = ll + c * nu
             res.append([0, ll, nu, jic])
         
         ll = 2 * ( 
-            nll(Y, A1, A2, kwargs_glm['family'], kwargs_glm['nuisance']) / p 
+            nll(Y, A1, A2, family, nuisance, offset) / p 
             - np.sum(logh) / (n*p) ) 
         nu = (d + r) * np.maximum(n,p) * np.log(n * p / np.maximum(n,p)) / (n*p)
         jic = ll + c * nu

@@ -3,7 +3,7 @@ __all__ = ['ATE', 'SATE', 'FC', 'LFC',
 
 from causarray.DR_learner import ATE, SATE, FC, LFC
 from causarray.gcate_glm import fit_glm
-from causarray.utils import reset_random_seeds
+from causarray.utils import reset_random_seeds, comp_size_factor
 
 # from causarray.gcate_likelihood import *
 # from causarray.gcate_opt import *

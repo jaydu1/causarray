@@ -50,6 +50,52 @@ class Early_Stopping():
             return False
 
 
+
+def _geo_mean(x):
+    non_zero_x = x[x != 0]
+    if len(non_zero_x) == 0:
+        return 0
+    else:
+        return np.mean(np.log(non_zero_x))
+        
+def _normalize(counts, log_geo_means):
+    log_cnts = np.log(counts)
+    diff = log_cnts - log_geo_means
+    mask = np.isfinite(log_geo_means) & (counts > 0)
+    return np.median(diff[mask])
+
+
+def comp_size_factor(counts, method='geomeans', lib_size=1e4, **kwargs):
+    '''
+    Compute the size factors of the rows of the count matrix.
+
+    Parameters
+    ----------
+    counts : array-like
+        The input raw count matrix.
+    method : str
+        The method to compute the size factors, 'geomeans' or 'scale'.
+    lib_size : float
+        The desired library size after normalziation for 'scale'.
+    
+    Returns
+    -------
+    size_factor : array-like
+        The size factors of the rows.
+    '''
+    if method=='geomeans':
+        log_geo_means = np.apply_along_axis(_geo_mean, axis=0, arr=counts)
+        log_size_factor = np.apply_along_axis(_normalize, axis=1, arr=Y, log_geo_means=log_geo_means)
+        size_factor = np.exp(log_size_factor - np.mean(log_size_factor))
+    elif method=='scale':
+        size_factor = 1./np.sum(Y, axis=0)*lib_size
+    else:
+        raise ValueError("Method must be in {'geomeans' or 'scale'}.")
+
+    return size_factor
+
+
+
 def plot_r(df_r, c=1):
     '''
     Plot the results of the estimation of the number of latent factors.
@@ -106,4 +152,6 @@ def plot_r(df_r, c=1):
     par.tick_params(axis='y', colors=p2.get_color(), labelsize=14)
     host.tick_params(axis='y', colors=p1.get_color(), labelsize=14)
 
-    return fig            
+    return fig
+
+
