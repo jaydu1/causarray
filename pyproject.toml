@@ -2,12 +2,11 @@
 requires = ["setuptools>=45", "setuptools_scm[toml]>=6.2", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-include = ['causarray*']
-exclude = ["^docs/", "^tests/", "^tutorial/"]
-
 [tool.hatch.build.targets.wheel]
 packages = ["causarray"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["docs*", "tests*", "tutorial*"]
 
 [project]
 name = "causarray"
