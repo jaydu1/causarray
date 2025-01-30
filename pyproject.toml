@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 packages = ["causarray"]
 
 [tool.hatch.build.targets.sdist]
+only-packages = true
 exclude = ["docs/", "tests/", "tutorial/"]
 
 [project]
