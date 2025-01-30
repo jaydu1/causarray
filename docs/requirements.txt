@@ -7,7 +7,6 @@ sphinxcontrib-svg2pdfconverter
 
 
 h5py
-hdf5
 joblib
 matplotlib
 numba
