@@ -79,9 +79,10 @@ def fit_gcate(Y, X, A, r, family='nb', disp_glm=None, disp_family=None, offset=T
         Keyword arguments for the early stopper in the second phrase.
     c1 : float
         The regularization constant in the first phrase. Default is 0.1.
-    **kwargs : dict
+    kwargs : dict
         Additional keyword arguments.
     '''
+
     X = np.hstack((X, A))
     a = A.shape[1]
     Y, kwargs_glm, lam1 = _check_input(Y, X, family, disp_glm, disp_family, offset, c1, **kwargs)    
@@ -121,7 +122,7 @@ def estimate(Y, X, r, a, lam1,
         Keyword arguments of the early stopping monitor for the first optimization problem.
     kwargs_es_2 : dict
         Keyword arguments of the early stopping monitor for the second optimization problem.
-    **kwargs : dict
+    kwargs : dict
         Additional keyword arguments.
 
     Returns
@@ -133,6 +134,7 @@ def estimate(Y, X, r, a, lam1,
             'X_U': the matrix (n, d+a+r) for the covariate and updated latent factors.
             'B_Gamma': the matrix (p, d+a+r) for the updated covariate and latent coefficients.
     '''
+
     p = Y.shape[1]
 
     valid_params = _filter_params(alter_min, kwargs)

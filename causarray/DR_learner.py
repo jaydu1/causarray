@@ -201,7 +201,7 @@ def LFC(
     
     verbose : bool
         Whether to print the model information.
-    **kwargs : dict
+    kwargs : dict
         Additional arguments to pass to fit_glm.
     
     Returns
