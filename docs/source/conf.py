@@ -108,7 +108,7 @@ except Exception:
 # release = '<unknown>'
 # -- Options for HTML output ----------------------------------------------
 
-html_title = project + ' v' + release
+html_title = project
 
 # -- Options for LaTeX output ---------------------------------------------
 
