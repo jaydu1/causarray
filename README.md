@@ -17,6 +17,13 @@ PIP_NO_DEPS=1 conda env create -f environment.yml
 <!-- 
 # Development
 
+## Build
+```cmd
+git tag 0.0.0
+git tag --delete 1.0.0
+python -m pip install .
+```
+
 ## Testing
 ```cmd
 python -m pytest tests/test_gcate.py
