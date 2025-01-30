@@ -1,3 +1,7 @@
+[![PyPI](https://img.shields.io/pypi/v/causarray?label=pypi)](https://pypi.org/project/causarray)
+[![PyPI-Downloads](https://img.shields.io/pepy/dt/causarray)](https://pepy.tech/project/causarray)
+
+
 # causarray
 
 Advances in single-cell sequencing and CRISPR technologies have enabled detailed case-control comparisons and experimental perturbations at single-cell resolution. However, uncovering causal relationships in observational genomic data remains challenging due to selection bias and inadequate adjustment for unmeasured confounders, particularly in heterogeneous datasets. To address these challenges, we introduce `causarray` [Du25], a doubly robust causal inference framework for analyzing array-based genomic data at both bulk-cell and single-cell levels. `causarray` integrates a generalized confounder adjustment method to account for unmeasured confounders and employs semiparametric inference with ﬂexible machine learning techniques to ensure robust statistical estimation of treatment effects.
@@ -5,17 +9,26 @@ Advances in single-cell sequencing and CRISPR technologies have enabled detailed
 
 # Requirements
 
-The dependencies for running `causarray` method are listed in `environment.yml` and can be installed by running
 
+The module can be installed via PyPI:
 ```cmd
-PIP_NO_DEPS=1 conda env create -f environment.yml
+pip install causarray
 ```
+
+
 
 
 
 
 <!-- 
 # Development
+
+The dependencies for running `causarray` method are listed in `environment.yml` and can be installed by running
+
+```cmd
+PIP_NO_DEPS=1 conda env create -f environment.yml
+```
+
 
 ## Build
 ```cmd
