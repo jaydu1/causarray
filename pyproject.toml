@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=45", "setuptools_scm[toml]>=6.2", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["causarray"]
+
+[project]
+name = "causarray"
+dynamic = ["version"]
+requires-python = ">= 3.8"
+dependencies = [
+    "pip",
+    "numpy",
+    "numba",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "statsmodels",
+    "tqdm",
+    "joblib",
+    "matplotlib",
+    "sklearn_ensemble_cv",
+]
+authors = [
+  {name = "Jin-Hong Du", email = "jinhongd@andrew.cmu.com"},
+  {name = "Maya Shen", email = "myshen@andrew.cmu.edu"},
+  {name = "Hansruedi Mathys", email = "mathysh@pitt.edu"},
+  {name = "Kathryn Roeder", email = "jinhongd@andrew.cmu.com"}
+]
+maintainers = [
+  {name = "Jin-Hong Du", email = "jinhongd@andrew.cmu.com"}
+]
+description = "causarray is a Python module for A Python package for simultaneous causal inference with an array of outcomes."
+readme = {file = "README.txt", content-type = "text/markdown"}
+license = {text = "MIT License"}
+
+[tool.setuptools_scm]
+write_to = "causarray/_version.py"

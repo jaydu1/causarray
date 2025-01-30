@@ -1,0 +1,39 @@
+name: causarray
+channels:
+  - conda-forge
+  - defaults
+dependencies:  
+  - h5py
+  - hdf5
+  - ipykernel
+  - joblib
+  - jupyter
+  - matplotlib
+  - numba
+  - numpy
+  - pandas
+  - pip
+  - pytest
+  - python>=3.8
+  - scanpy
+  - scikit-learn>=1.6
+  - scipy
+  - seaborn
+  - statsmodels>=0.14
+  - tqdm
+  - wheel
+
+  # for documentation
+  - sphinx
+  - sphinx-book-theme
+  - numpydoc
+  - nbsphinx
+  - sphinxcontrib-bibtex
+  - sphinxcontrib-svg2pdfconverter
+  - jupyter_contrib_nbextensions
+
+  - pip:
+      - build
+      - pyproject-hooks
+      - sklearn-ensemble-cv>=0.2.4
+
