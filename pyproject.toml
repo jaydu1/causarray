@@ -36,7 +36,7 @@ maintainers = [
   {name = "Jin-Hong Du", email = "jinhongd@andrew.cmu.com"}
 ]
 description = "causarray is a Python module for A Python package for simultaneous causal inference with an array of outcomes."
-readme = {file = "README.txt", content-type = "text/markdown"}
+readme = {file = "README.md", content-type = "text/markdown"}
 license = {text = "MIT License"}
 
 [tool.setuptools_scm]
