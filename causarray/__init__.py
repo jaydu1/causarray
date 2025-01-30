@@ -9,9 +9,8 @@ from causarray.gcate_glm import fit_glm
 from causarray.utils import prep_causarray_data, reset_random_seeds, comp_size_factor
 
 from causarray.gcate import *
-from causarray._version import __version__
+from causarray.__about__ import __version__
 
-__version__ = '.'.join(__version__.split('.')[:3])
 __license__ = "MIT"
 
 __author__ = "Jin-Hong Du, Maya Shen, Hansruedi Mathys, and Kathryn Roeder"
