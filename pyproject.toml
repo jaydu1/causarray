@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ['causarray*']
-exclude = ["docs*", "tests*", "tutorial*"]
+exclude = ["docs/*", "tests/*", "tutorial/*"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["causarray"]
