@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 packages = ["causarray"]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["docs*", "tests*", "tutorial*"]
+exclude = ["docs/", "tests/", "tutorial/"]
 
 [project]
 name = "causarray"
