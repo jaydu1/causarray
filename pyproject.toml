@@ -39,6 +39,18 @@ description = "causarray is a Python module for A Python package for simultaneou
 readme = {file = "README.md", content-type = "text/markdown"}
 license = {text = "MIT License"}
 
+classifiers = [
+
+    "Programming Language :: Python :: 3",
+
+    "License :: OSI Approved :: MIT License",
+
+    "Intended Audience :: Developers",
+
+    # Add more classifiers as needed
+
+] 
+
 [tool.setuptools_scm]
 version_scheme = "no-guess-dev"
 local_scheme = "no-local-version"
