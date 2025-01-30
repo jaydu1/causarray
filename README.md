@@ -16,7 +16,12 @@ pip install causarray
 ```
 
 
+# Logs
 
+- [x] (2025-01-30) Python package released on PyPI
+- [ ] Documentation
+- [ ] R package or wrapper
+- [ ] Tutorial
 
 
 
