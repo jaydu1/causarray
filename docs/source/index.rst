@@ -11,10 +11,24 @@ Advances in single-cell sequencing and CRISPR technologies have enabled detailed
 
 
 .. toctree::
-   :maxdepth: 4
+   :maxdepth: 1
    :glob:
-   :caption: Contents:
+   :caption: Main functions
 
-   gcate
+   main_function/gcate
+   main_function/lfc
 
-   lfc
+
+.. toctree::
+   :maxdepth: 1
+   :glob:
+   :caption: Tutorials (Python)
+
+   tutorial/perturbseq-py.ipynb
+
+.. toctree::
+   :maxdepth: 1
+   :glob:
+   :caption: Tutorials (R)
+
+   tutorial/perturbseq-r.md   

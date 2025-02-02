@@ -10,13 +10,22 @@ Advances in single-cell sequencing and CRISPR technologies have enabled detailed
 
 # Usage
 
+We recommend using `causarray` in a conda environment:
+```cmd
+# create a new conda environment and install the necessary packages
+conda create -n causarray python=3.12 -y
+
+# activate the environment
+conda activate causarray
+```
 
 The module can be installed via PyPI:
 ```cmd
 pip install causarray
 ```
 
-The documentation is available at [causarray.readthedocs.io](https://causarray.readthedocs.io/en/latest/).
+For `R` users, `reticulate` can be used to call `causarray` from `R`.
+The documentation and tutorials using both `Python` and `R` are available at [causarray.readthedocs.io](https://causarray.readthedocs.io/en/latest/).
 
 
 
@@ -60,6 +69,9 @@ mkdir docs
 sphinx-quickstart
 cd docs
 make html # sphinx-build source build
+
+
+rmarkdown::render("perturbseq.Rmd", rmarkdown::md_document(variant = "markdown_github"))
 ```
 -->
 

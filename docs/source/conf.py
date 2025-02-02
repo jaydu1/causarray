@@ -10,13 +10,13 @@ sys.setrecursionlimit(1500)
 
 
 
-
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
 extensions = [
     'numpydoc',
     'nbsphinx',
+    'myst_parser',
     'sphinx.ext.mathjax',  # for math equations
     'sphinxcontrib.bibtex',  # for bibliographic references
     'sphinxcontrib.rsvgconverter',  # for SVG->PDF conversion in LaTeX output

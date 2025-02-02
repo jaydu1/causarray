@@ -29,10 +29,11 @@ dependencies:
   - sphinx
   - sphinx-book-theme
   - numpydoc
-  - nbsphinx
+  - nbsphinx # Jupyter to RST
   - sphinxcontrib-bibtex
   - sphinxcontrib-svg2pdfconverter
   - jupyter_contrib_nbextensions
+  - myst-parser # Markdown to RST
 
   - pip:
       - sklearn-ensemble-cv>=0.2.4

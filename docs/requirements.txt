@@ -4,7 +4,7 @@ numpydoc
 nbsphinx
 sphinxcontrib-bibtex
 sphinxcontrib-svg2pdfconverter
-
+myst-parser
 
 h5py
 joblib
