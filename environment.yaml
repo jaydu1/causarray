@@ -12,8 +12,7 @@ dependencies:
   - numba
   - numpy
   - pandas
-  - pip
-  - pytest
+  - pip  
   - python>=3.8
   - scanpy
   - scikit-learn>=1.6
@@ -21,6 +20,9 @@ dependencies:
   - seaborn
   - statsmodels>=0.14
   - tqdm
+
+  # for development
+  - pytest
   - wheel
 
   # for documentation
@@ -33,7 +35,10 @@ dependencies:
   - jupyter_contrib_nbextensions
 
   - pip:
+      - sklearn-ensemble-cv>=0.2.4
+      
+      # for development
       - build
       - pyproject-hooks
-      - sklearn-ensemble-cv>=0.2.4
+      
 
