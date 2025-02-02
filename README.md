@@ -23,6 +23,7 @@ The documentation is available at [causarray.readthedocs.io](https://causarray.r
 # Logs
 
 - [x] (2025-01-30) Python package released on PyPI
+- [x] (2025-02-01) code for reproducing figures in paper
 - [ ] Documentation
 - [ ] Tutorial
 - [ ] R package or wrapper
