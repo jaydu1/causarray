@@ -33,10 +33,8 @@ The documentation and tutorials using both `Python` and `R` are available at [ca
 
 - [x] (2025-01-30) Python package released on PyPI
 - [x] (2025-02-01) code for reproducing figures in paper
+- [x] (2025-02-02) Tutorial for Python and R
 - [ ] Documentation
-- [ ] Tutorial
-- [ ] R package or wrapper
-
 
 
 <!-- 
