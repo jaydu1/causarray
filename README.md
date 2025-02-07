@@ -8,7 +8,7 @@
 Advances in single-cell sequencing and CRISPR technologies have enabled detailed case-control comparisons and experimental perturbations at single-cell resolution. However, uncovering causal relationships in observational genomic data remains challenging due to selection bias and inadequate adjustment for unmeasured confounders, particularly in heterogeneous datasets. To address these challenges, we introduce `causarray` [Du25], a doubly robust causal inference framework for analyzing array-based genomic data at both bulk-cell and single-cell levels. `causarray` integrates a generalized confounder adjustment method to account for unmeasured confounders and employs semiparametric inference with ﬂexible machine learning techniques to ensure robust statistical estimation of treatment effects.
 
 
-# Usage
+## Usage
 
 We recommend using `causarray` in a conda environment:
 ```cmd
@@ -29,7 +29,7 @@ The documentation and tutorials using both `Python` and `R` are available at [ca
 
 
 
-# Logs
+## Logs
 
 - [x] (2025-01-30) Python package released on PyPI
 - [x] (2025-02-01) code for reproducing figures in paper
@@ -64,8 +64,9 @@ python -m pytest tests/test_DR_learner.py
 
 ```cmd
 mkdir docs
-sphinx-quickstart
 cd docs
+sphinx-quickstart
+
 make html # sphinx-build source build
 
 
@@ -74,5 +75,5 @@ rmarkdown::render("perturbseq.Rmd", rmarkdown::md_document(variant = "markdown_g
 -->
 
 
-# References
+## References
 [Du25] Jin-Hong Du, Maya Shen, Hansruedi Mathys, and Kathryn Roeder (2025). Causal differential expression analysis under unmeasured confounders with causarray. bioRxiv, 2025-01.
