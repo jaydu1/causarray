@@ -21,6 +21,7 @@ causarray is a Python module for simultaneous causal inference with an array of 
    :glob:
    :caption: Main functions
 
+   main_function/preprocess
    main_function/gcate
    main_function/lfc
 
