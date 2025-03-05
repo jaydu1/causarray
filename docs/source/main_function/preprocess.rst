@@ -1,4 +1,4 @@
 Preprocessing
 =================================
-.. automodule:: causarray.util
+.. automodule:: causarray.utils
    :members: prep_causarray_data
