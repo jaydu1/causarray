@@ -69,8 +69,8 @@ def cross_fitting(
     pi_hat : array
         Estimated propensity score.
     '''
-    func_ps, params_ps = _get_func_ps(ps_model, **kwargs)
-    params_glm = _filter_params(fit_glm, kwargs)
+    func_ps, params_ps = _get_func_ps(ps_model, verbose=verbose, **kwargs)
+    params_glm = _filter_params(fit_glm, {**kwargs, 'verbose': verbose})
 
     if verbose:
         pprint.pprint(params_ps)
@@ -97,6 +97,7 @@ def cross_fitting(
         Y_train, Y_test = Y[train_index], Y[test_index]
 
         if fit_pi:
+            if verbose: pprint.pprint('Fit propensity score models...')
             i_ctrl = (np.sum(A_train, axis=1) == 0.)
 
             pi = np.zeros_like(A_test, dtype=float)
@@ -111,13 +112,13 @@ def cross_fitting(
                 else:
                     pi[:,j] = func_ps(XA_train[i_cells], A_train[i_cells][:,j], XA_test)
 
+        if verbose: pprint.pprint('Fit outcome models...')
         # Fit GLM on training data and predict on test data
         res = fit_glm(Y_train, X_train, A_train, family=family, alpha=glm_alpha,
             impute=X_test, **params_glm)
         
         # Store results
-        if fit_pi:
-            pi_hat[test_index] = pi
+        if fit_pi: pi_hat[test_index] = pi
 
         Y_hat[test_index,:,:,0] = res[1][0]
         Y_hat[test_index,:,:,1] = res[1][1]

@@ -109,6 +109,7 @@ def compute_causal_estimand(
         Y_hat=Y_hat, pi_hat=pi_hat, random_state=random_state, verbose=verbose, **kwargs)
     pi_hat = pi_hat.reshape(*A.shape)
 
+    if verbose: pprint.pprint('Estimating AIPW mean...')
     # point estimation of the treatment effect
     _, etas = AIPW_mean(Y, np.stack([1-A, A], axis=-1), 
         Y_hat, np.stack([1-pi_hat, pi_hat], axis=-1), positive=True)

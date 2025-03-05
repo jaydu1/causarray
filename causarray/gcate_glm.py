@@ -49,13 +49,26 @@ def fit_glm(Y, X, A=None, family='gaussian', disp_family='poisson',
     impute : bool
         whether to impute potential outcomes and get predicted values
     offset : bool
-        whether to use log of sum of Y as offset    
+        whether to use log of sum of Y as offset
+
+    Returns
+    -------
+    B : array
+        d x p matrix of coefficients
+    Yhat : array
+        n x p x a matrix of predicted values
+    disp_glm : array
+        p x 1 vector of dispersion parameters
+    offsets : array
+        n x 1 vector of offsets
+    resid_deviance : array
+        n x p matrix of deviance residuals
     '''
     np.random.seed(random_state)
     
     if family not in ['gaussian', 'poisson', 'nb']:
         raise ValueError('Family not recognized')
-   
+
     d = X.shape[1]
 
     if A is None:
@@ -70,8 +83,6 @@ def fit_glm(Y, X, A=None, family='gaussian', disp_family='poisson',
             X_test = X
         X_test = np.c_[X,np.zeros_like(A)]
         X = np.c_[X,A]
-        # X_test = X.copy()
-
         a = A.shape[1]
 
     if offset is not None and offset is not False:
@@ -90,7 +101,7 @@ def fit_glm(Y, X, A=None, family='gaussian', disp_family='poisson',
     pprint.pprint('Fitting {} GLM{}...'.format(family, '' if offsets is None else ' with offset'))
     is_constant = np.all(X == X[0, :], axis=0)
     alpha[is_constant] = 0
-    # alpha[:-a] = 0
+
 
     families = {
         'gaussian': lambda disp: sm.families.Gaussian(),
@@ -122,11 +133,11 @@ def fit_glm(Y, X, A=None, family='gaussian', disp_family='poisson',
             Yhat_0 = np.zeros((Y.shape[0], a))
             Yhat_1 = np.zeros((Y.shape[0], a))
             if impute is not False:
-                for j in range(a):
+                for k in range(a):
                     X_test_copy = X_test.copy()
-                    Yhat_0[:,j] = mod.predict(X_test_copy, offset=offsets)                    
-                    X_test_copy[:, d+j] = 1  # Update the j-th column with all ones
-                    Yhat_1[:,j] = mod.predict(X_test_copy, offset=offsets)
+                    Yhat_0[:,k] = mod.predict(X_test_copy, offset=offsets)                    
+                    X_test_copy[:, d+k] = 1
+                    Yhat_1[:,k] = mod.predict(X_test_copy, offset=offsets)
             else:
                 Yhat_0[:,:] = Yhat_1[:,:] = mod.predict(X, offset=offsets).reshape(-1, a)
             
@@ -146,9 +157,11 @@ def fit_glm(Y, X, A=None, family='gaussian', disp_family='poisson',
 
     results = Parallel(n_jobs=n_jobs)(delayed(fit_model)(
         j, Y, X, offsets, family, disp_glm, impute, alpha) for j in tqdm(range(Y.shape[1])))
+    pprint.pprint('Fitting GLM done.')
+    if verbose: pprint.pprint('Fitting GLM done.')
 
     B, Yhat_0, Yhat_1, resid_deviance = zip(*results)
-    B = np.array(B)    
+    B = np.array(B)
     Yhat_0 = np.array(Yhat_0).transpose(1, 0, 2)
     Yhat_1 = np.array(Yhat_1).transpose(1, 0, 2)
     resid_deviance = np.array(resid_deviance).T
@@ -171,7 +184,6 @@ def estimate_disp(Y, X=None, A=None, Y_hat=None, disp_family='gaussian', offset=
     else:
         offsets = None
         sf = 1.
-    
 
     if Y_hat is None:        
         if verbose:
@@ -183,8 +195,7 @@ def estimate_disp(Y, X=None, A=None, Y_hat=None, disp_family='gaussian', offset=
         if disp_family=='gaussian':
             Y_norm = Y/sf
             reg = LinearRegression(fit_intercept=False).fit(X, Y_norm)
-            Y_hat = reg.predict(X)
-            # Y_hat = np.clip(Y_hat, 0, 1) * sf            
+            Y_hat = reg.predict(X)     
         elif disp_family=='poisson':
             Y_hat = fit_glm(Y, X, None, offset=offsets, family='poisson', impute=False, **kwargs)[1]      
             Y_hat /= sf
