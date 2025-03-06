@@ -5,16 +5,14 @@ from scipy.stats import norm
 from statsmodels.stats.multitest import multipletests, fdrcorrection
 
 
-def multiplier_bootstrap(resid, var_est, B):
+def multiplier_bootstrap(eta, std_est, B):
     '''
     Multiplier bootstrap for inference.
 
     Parameters
     ----------
-    resid : array-like
-        [n, p] Residuals.
-    var_est : array-like
-        [p,] Variance of the parameter estimates.
+    eta : array-like
+        [n, p] Influence function values scaled by inversion of standard deviation.
     B : int
         Number of bootstrap samples.
 
@@ -23,16 +21,12 @@ def multiplier_bootstrap(resid, var_est, B):
     z_init : array-like
         [B, p] Bootstrap statistics for each hypothesis.
     '''
-    n, p = resid.shape
+    n, p = eta.shape
     B = int(B)
     z_init = np.zeros((B,p))
-    eta = resid / np.sqrt(n * var_est[None,:])
     for b in range(B):
         g = np.random.normal(size=n)
         z_init[b, :] = np.sum(eta * g[:, None], axis=0)
-
-    # g = np.random.normal(size=(B,n,1))
-    # z_init = np.sum(resid[None, :,:] * g, axis=1) / np.sqrt(n * var_est[None,:])
 
     return z_init
     
@@ -106,9 +100,9 @@ def augmentation(V, tvalues, c):
 
 
 def fdx_control(
-    tau_est, var_est, tvalues_init, eta_est,
+    tau_est, tvalues_init, eta_est,
     fdx, B, alpha, c, 
-    min_var=1e-4, min_diff=0.1
+    min_var=1e-8, min_diff=0.1
     ):
     '''
     Perform FDX control.
@@ -117,12 +111,10 @@ def fdx_control(
     ----------
     tau_est : array-like
         The estimated causal effect.    
-    var_est : array-like
-        The estimated variance.
     tvalues_init : array-like
         The estimated t-values.
     eta_est : array-like
-        The estimated influence function values.
+        The estimated influence function values, scaled by inversion of standard deviation.
     fdx : bool
         If True, perform FDX control.
     B : int
@@ -141,8 +133,8 @@ def fdx_control(
     n = eta_est.shape[0]
 
     if fdx:
-        id_test = var_est >= min_var
-        z_init = multiplier_bootstrap(eta_est, var_est, B)
+        id_test = std_est >= min_var
+        z_init = multiplier_bootstrap(eta_est, B)
         z_init[:, ~id_test] = 0.
         tvalues = tvalues_init.copy()
         tvalues[~id_test] = 0.

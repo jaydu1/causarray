@@ -132,10 +132,10 @@ def compute_causal_estimand(
         tvalues_init = tau_est / std_est
 
         # Multiple testing procedure
-        V = fdx_control(tau_est, var_est, tvalues_init, eta_est, fdx, fdx_B, fdx_alpha, fdx_c)
+        V = fdx_control(tau_est, tvalues_init, eta_est/std_est[None,:], fdx, fdx_B, fdx_alpha, fdx_c)
 
         # BH correction
-        tvalues_init[np.isinf(var_est)] = np.nan
+        tvalues_init[np.isinf(std_est)] = np.nan
         pvals, qvals, pvals_adj, qvals_adj = bh_correction(tvalues_init)
         
         df_res = pd.DataFrame({
