@@ -5,7 +5,7 @@ from scipy.stats import norm
 from statsmodels.stats.multitest import multipletests, fdrcorrection
 
 
-def multiplier_bootstrap(eta, std_est, B):
+def multiplier_bootstrap(eta, B):
     '''
     Multiplier bootstrap for inference.
 
@@ -100,7 +100,7 @@ def augmentation(V, tvalues, c):
 
 
 def fdx_control(
-    tau_est, tvalues_init, eta_est,
+    tau_est, tvalues_init, eta_est, std_est,
     fdx, B, alpha, c, 
     min_var=1e-8, min_diff=0.1
     ):
@@ -115,6 +115,8 @@ def fdx_control(
         The estimated t-values.
     eta_est : array-like
         The estimated influence function values, scaled by inversion of standard deviation.
+    std_est : array-like
+        The estimated standard deviation.
     fdx : bool
         If True, perform FDX control.
     B : int
@@ -134,7 +136,7 @@ def fdx_control(
 
     if fdx:
         id_test = std_est >= min_var
-        z_init = multiplier_bootstrap(eta_est, B)
+        z_init = multiplier_bootstrap(eta_est / std_est[None,:], B)
         z_init[:, ~id_test] = 0.
         tvalues = tvalues_init.copy()
         tvalues[~id_test] = 0.
