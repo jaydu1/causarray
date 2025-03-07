@@ -11,7 +11,7 @@ from causarray.utils import reset_random_seeds, pprint, tqdm, comp_size_factor, 
 def compute_causal_estimand(
     estimand,
     Y, W, A, W_A=None, family='nb', offset=False,    
-    Y_hat=None, pi_hat=None, eps_var=1e-3,
+    Y_hat=None, pi_hat=None, mask=None,
     fdx=False, fdx_B=1000, fdx_alpha=0.05, fdx_c=0.1,     
     verbose=False, random_state=0, **kwargs):
     '''
@@ -39,6 +39,10 @@ def compute_causal_estimand(
         Predicted outcomes under treatment of shape (n, p, a, 2).
     pi_hat : array, optional
         Predicted propensity scores of shape (n, a).
+    mask : array, optional
+        Boolean mask of shape (n, a) for the treatment, indicating which samples are used for 
+        the estimation of the estimand. This does not affect the estimation of pseudo-outcomes
+        and propensity scores.
 
     fdx : bool
         Whether to use FDX control, P(FDP > c) < alpha.
@@ -87,6 +91,12 @@ def compute_causal_estimand(
         W_A = W
     elif isinstance(W_A, pd.DataFrame):
         W_A = W_A.values
+
+    if mask is not None:
+        mask = np.array(mask).astype(bool)
+        if len(mask.shape) == 1: mask = mask.reshape(-1,1)
+        if mask.shape != A.shape:
+            raise ValueError('Mask must have the same shape as the treatment matrix')
     
 
     if verbose:
@@ -117,18 +127,18 @@ def compute_causal_estimand(
     # normalize the influence function values
     etas /= size_factors[:,None,None,None]
 
-
-    i_ctrl = (np.sum(A, axis=1) == 0.)
-
     res = []
     iters = range(A.shape[1]) if A.shape[1]==1 else tqdm(range(A.shape[1]))
     for j in iters:
-        i_case = (A[:,j] == 1.)
-        i_cells = i_ctrl | i_case
-        n_cells = np.sum(i_cells)        
-        eta_est, tau_est, var_est = estimand(etas[i_cells,:,j], **kwargs)
+        if mask is not None:
+            i_cells = mask[:, j]
+        else:
+            i_ctrl = (np.sum(A, axis=1) == 0.)
+            i_case = (A[:,j] == 1.)
+            i_cells = i_ctrl | i_case
+        eta_est, tau_est, var_est = estimand(etas[i_cells,:,j], A[i_cells,j], **kwargs)
 
-        std_est = np.sqrt((var_est + eps_var)/ n_cells)
+        std_est = np.sqrt(var_est)
         tvalues_init = tau_est / std_est
 
         # Multiple testing procedure
@@ -159,7 +169,7 @@ def compute_causal_estimand(
 
 def LFC(
     Y, W, A, W_A=None, family='nb', offset=False,    
-    Y_hat=None, pi_hat=None, cross_est=False, 
+    Y_hat=None, pi_hat=None, cross_est=False,  mask=None, usevar='pooled',
     thres_min=1e-4, thres_diff=1e-6, eps_var=1e-3,
     fdx=False, fdx_alpha=0.05, fdx_c=0.1,     
     verbose=False, **kwargs):
@@ -187,12 +197,18 @@ def LFC(
         Predicted propensity scores of shape (n, a).
     cross_est : bool
         Whether to use cross-estimation.
+    mask : array, optional
+        Boolean mask of shape (n, a) for the treatment, indicating which samples are used for 
+        the estimation of the estimand. This does not affect the estimation of pseudo-outcomes
+        and propensity scores.
     
     thres_min : float
         The minimum threshold for the treatment effect.
     thres_diff : float
         The minimum threshold for the difference in treatment effect.
-    
+    eps_var : float
+        The minimum threshold for the variance of treatment.
+
     fdx : bool
         Whether to use FDX control, P(FDP > c) < alpha.
     fdx_alpha : float
@@ -211,7 +227,7 @@ def LFC(
         Dataframe of test results.
     '''
 
-    def estimand(etas, **kwargs):
+    def estimand(etas, A, **kwargs):
         eta_0, eta_1 = etas[..., 0], etas[..., 1]
         tau_0, tau_1 = np.mean(eta_0, axis=0), np.mean(eta_1, axis=0)
 
@@ -219,7 +235,18 @@ def LFC(
         tau_0 = np.clip(tau_0, thres_diff, None)
         tau_est = np.log(tau_1/tau_0)
         eta_est = eta_1 / tau_1[None,:] -  eta_0 / tau_0[None,:]
-        var_est = np.var(eta_est, axis=0, ddof=1)
+
+        if usevar == 'pooled':
+            var_est = (np.var(eta_est, axis=0, ddof=1) + eps_var) / eta_est.shape[0]
+        elif usevar == 'unequal':
+            # Estimate the variance using Welch's t-test
+            var_0 = np.var(eta_est[A==0], axis=0, ddof=1)
+            var_1 = np.var(eta_est[A==1], axis=0, ddof=1)
+            n_0 = np.sum(A==0)
+            n_1 = np.sum(A==1)
+            var_est = (var_0 + eps_var) / n_0 + (var_1 + eps_var) / n_1
+        else:
+            raise ValueError('usevar must be either "pooled" or "unequal"')
 
         # filter out low-expressed genes
         idx = (np.maximum(tau_0,tau_1)<thres_min) & ((tau_1-tau_0)<thres_diff)
@@ -229,7 +256,7 @@ def LFC(
 
     return compute_causal_estimand(
         estimand, Y, W, A, W_A, family, offset,    
-        Y_hat=Y_hat, pi_hat=pi_hat,
+        Y_hat=Y_hat, pi_hat=pi_hat, mask=mask,
         fdx=fdx, fdx_alpha=fdx_alpha, fdx_c=fdx_c, verbose=verbose, **kwargs)
 
 
