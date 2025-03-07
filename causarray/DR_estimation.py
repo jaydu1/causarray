@@ -86,7 +86,8 @@ def cross_fitting(
     # Initialize lists to store results
     fit_pi = True if pi_hat is None else False
     pi_hat = np.zeros_like(A, dtype=float) if fit_pi else pi_hat
-    Y_hat = np.zeros((Y.shape[0],Y.shape[1],A.shape[1],2), dtype=float)
+    fit_Y = True if Y_hat is None else False
+    Y_hat = np.zeros((Y.shape[0],Y.shape[1],A.shape[1],2), dtype=float) if fit_Y else Y_hat
 
     # Perform cross-fitting
     for train_index, test_index in folds:
@@ -111,17 +112,15 @@ def cross_fitting(
                     pi[A_train[:,j] == 0., j] = 1 - prob
                 else:
                     pi[:,j] = func_ps(XA_train[i_cells], A_train[i_cells][:,j], XA_test)
+            pi_hat[test_index] = pi
 
-        if verbose: pprint.pprint('Fit outcome models...')
-        # Fit GLM on training data and predict on test data
-        res = fit_glm(Y_train, X_train, A_train, family=family, alpha=glm_alpha,
-            impute=X_test, **params_glm)
-        
-        # Store results
-        if fit_pi: pi_hat[test_index] = pi
-
-        Y_hat[test_index,:,:,0] = res[1][0]
-        Y_hat[test_index,:,:,1] = res[1][1]
+        if fit_Y:
+            if verbose: pprint.pprint('Fit outcome models...')
+            # Fit GLM on training data and predict on test data
+            res = fit_glm(Y_train, X_train, A_train, family=family, alpha=glm_alpha,
+                impute=X_test, **params_glm)
+            Y_hat[test_index,:,:,0] = res[1][0]
+            Y_hat[test_index,:,:,1] = res[1][1]
 
     pi_hat = np.clip(pi_hat, 0.01, 0.99)
     Y_hat = np.clip(Y_hat, None, 1e5)
