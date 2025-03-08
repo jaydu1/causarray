@@ -50,14 +50,15 @@ def prep_causarray_data(Y, A, X=None, X_A=None, intercept=True):
     if not isinstance(A, pd.DataFrame):
         A = np.asarray(A)
 
-    X = np.zeros((Y.shape[0], 0)) if X is None else np.asarray(X)    
-    intercept_col = np.ones((X.shape[0], 1)) if intercept else np.empty((X.shape[0], 0))
-    X = np.hstack((intercept_col, X))
-
+    X = np.zeros((Y.shape[0], 0)) if X is None else np.asarray(X)        
     X_A = X if X_A is None else np.asarray(X_A)
     loglibsize = np.log2(np.sum(np.asarray(Y), axis=1))
     loglibsize = (loglibsize - np.mean(loglibsize)) / np.std(loglibsize, ddof=1)
     X_A = np.hstack((X_A, loglibsize[:, None]))
+
+    intercept_col = np.ones((X.shape[0], 1)) if intercept else np.empty((X.shape[0], 0))
+    X = np.hstack((intercept_col, X))
+    X_A = np.hstack((intercept_col, X_A))
 
     return Y, A, X, X_A
 
