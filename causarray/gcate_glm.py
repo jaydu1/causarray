@@ -156,8 +156,7 @@ def fit_glm(Y, X, A=None, family='gaussian', disp_family='poisson',
 
 
     results = Parallel(n_jobs=n_jobs)(delayed(fit_model)(
-        j, Y, X, offsets, family, disp_glm, impute, alpha) for j in tqdm(range(Y.shape[1])))
-    pprint.pprint('Fitting GLM done.')
+        j, Y, X, offsets, family, disp_glm, impute, alpha) for j in tqdm(range(Y.shape[1]), disable=not verbose))
     if verbose: pprint.pprint('Fitting GLM done.')
 
     B, Yhat_0, Yhat_1, resid_deviance = zip(*results)

@@ -195,8 +195,8 @@ def estimate_r(Y, X, A, r_max, c=1.,
     df_r : DataFrame
         Results of the number of latent factors.
     '''
-    X = np.hstack((X, A))
     a, d = A.shape[1], X.shape[1]
+    X = np.hstack((X, A))    
     n, p = Y.shape
 
     Y, kwargs_glm, _ = _check_input(Y, X, family, disp_glm, disp_family, offset, None, **kwargs)
@@ -210,22 +210,31 @@ def estimate_r(Y, X, A, r_max, c=1.,
         r_list = np.arange(1, int(r_max)+1)
     else:
         r_list = np.array(r_max, dtype=int)
-        
-    for r in r_list:
-        res_1, res_2 = estimate(Y, X, r, a,
-            0, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, **kwargs)
-        A01, A02, A1, A2 = res_1['X_U'], res_1['B_Gamma'], res_2['X_U'], res_2['B_Gamma']
+    r_max = np.max(r_list)
 
-        logh = log_h(Y, family, nuisance)
+    # Estimate the residual deviance
+    res_glm = fit_glm(Y, X, offset=np.log(size_factor[:,0]), family=family, disp_glm=nuisance[0], maxiter=100, verbose=False)
+    u, s, vt = svds(res_glm[-1], k=r_max)
+    if u.shape[1]<r_max:
+        raise ValueError(f'The number of latent factors is larger than the rank of deviance residuals ({u.shape[1]}). Try to decrease the value of r.')
+    Q, _ = sp.linalg.qr(X, mode='economic')
+    P1 = np.identity(n) - Q @ Q.T
+    P1 = P1.astype(type_f)
+    A1 = np.c_[X, P1 @ u]
 
-        if r==1:
-            ll = 2 * ( 
-                nll(Y, A01, A02, family, nuisance, size_factor) / p 
-                - np.sum(logh) / (n*p) ) 
-            nu = (d+a) * np.maximum(n,p) * np.log(n * p / np.maximum(n,p)) / (n*p)
-            jic = ll + c * nu
-            res.append([0, ll, nu, jic])
-        
+    logh = log_h(Y, family, nuisance)
+    ll = 2 * ( 
+        nll(Y, X, res_glm[0], family, nuisance, size_factor) / p 
+        - np.sum(logh) / (n*p) ) 
+    nu = (d+a) * np.maximum(n,p) * np.log(n * p / np.maximum(n,p)) / (n*p)
+    jic = ll + c * nu
+    res.append([0, ll, nu, jic])
+
+    for r in r_list[::-1]:
+        _, res_2 = estimate(Y, X, r, a,
+            0, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, A=A1[:,:d+a+r], **kwargs)
+        A1, A2 = res_2['X_U'], res_2['B_Gamma']
+
         ll = 2 * ( 
             nll(Y, A1, A2, family, nuisance, size_factor) / p 
             - np.sum(logh) / (n*p) ) 
@@ -233,5 +242,5 @@ def estimate_r(Y, X, A, r_max, c=1.,
         jic = ll + c * nu
         res.append([r, ll, nu, jic])
 
-    df_r = pd.DataFrame(res, columns=['r', 'deviance', 'nu', 'JIC'])
+    df_r = pd.DataFrame(res, columns=['r', 'deviance', 'nu', 'JIC']).sort_values(by='r')
     return df_r 

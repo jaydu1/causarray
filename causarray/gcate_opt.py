@@ -208,19 +208,24 @@ def alter_min(
         a = d
 
     # initialization for Theta = A @ B^T    
-    if A is None or B is None:
+    if A is None:
         if verbose:
             pprint.pprint('Estimating initial latent variables with GLMs...')
-        res_glm = fit_glm(Y, X, offset=np.log(size_factor[:,0]), family=family, disp_glm=nuisance[0], maxiter=100)
+        res_glm = fit_glm(Y, X, offset=np.log(size_factor[:,0]), family=family, disp_glm=nuisance[0], maxiter=100, verbose=verbose)
         u, s, vt = svds(res_glm[-1], k=r)
 
         if u.shape[1]<r:
             raise ValueError(f'The number of latent factors is larger than the rank of deviance residuals ({u.shape[1]}). Try to decrease the value of r.')
+        
+        A = np.c_[X, P1 @ u]
+    else:
+        assert A.shape[1] == d+r
 
+    if B is None:
         if verbose:
             pprint.pprint('Estimating initial coefficients with GLMs...')
-        A = np.c_[X, P1 @ u]
-        B = fit_glm(Y, A, offset=np.log(size_factor[:,0]), family=family, disp_glm=nuisance[0], maxiter=100)[0]
+        
+        B = fit_glm(Y, A, offset=np.log(size_factor[:,0]), family=family, disp_glm=nuisance[0], maxiter=100, verbose=verbose)[0]
         
         E = A[:, -r:] @ B[:, -r:].T
         u, s, vh = sp.sparse.linalg.svds(E, k=r)        
@@ -228,19 +233,10 @@ def alter_min(
         B[:, d:] = vh.T * s[None,:]**(1/2)
         del E, u, s, vh
 
-        # if offset==1:
-        #     scale = np.sqrt(np.median(np.abs(X[:,0])))
-        #     B[:, :offset] = scale
-        #     A[:, :offset] /= scale 
 
     if P2 is not None:
         P2 = P2.astype(type_f)
-        # E = A[:,d-a:] @ B[:,d-a:].T @ (np.identity(p) - P2)
-        # u, s, vh = sp.sparse.linalg.svds(E, k=r)
         B[:, d-a:d] = P2 @ B[:, d-a:d]
-        # A[:, d:] = u * s[None,:]**(1/2)
-        # B[:, d:] = vh.T * s[None,:]**(1/2)
-        # del E, u, s, vh
     
 
     Y = Y.astype(type_f)
@@ -265,10 +261,10 @@ def alter_min(
     kwargs_ls['alpha'] = kwargs_ls['alpha']
     if verbose:
         pprint.pprint({'kwargs_glm':kwargs_glm,'kwargs_ls':kwargs_ls,'kwargs_es':kwargs_es}, compact=True)
-
+    pprint.pprint(f'Fitting GCATE (step {1 if P1 is None else 2})...')
     hist = [func_val_pre]
     es = Early_Stopping(**kwargs_es)
-    with tqdm(np.arange(kwargs_es['max_iters'])) as pbar:
+    with tqdm(np.arange(kwargs_es['max_iters']), disable=not verbose) as pbar:
         for t in pbar:
             func_val, A, B = update(
                 Y, A, B, d, weights, P1, P2,
@@ -281,7 +277,7 @@ def alter_min(
                 pprint.pprint('Encountered large or infinity values. Try to decrease the value of C for the norm constraints.')
                 break
             elif es(func_val):
-                pbar.set_postfix_str('Early stopped.' + es.info)
+                pbar.set_postfix_str('Early stopped. ' + es.info)
                 pbar.close()
                 break
             else:

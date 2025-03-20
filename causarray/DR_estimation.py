@@ -69,7 +69,7 @@ def cross_fitting(
     pi_hat : array
         Estimated propensity score.
     '''
-    func_ps, params_ps = _get_func_ps(ps_model, verbose=verbose, **kwargs)
+    func_ps, params_ps = _get_func_ps(ps_model, verbose=False, **kwargs)
     params_glm = _filter_params(fit_glm, {**kwargs, 'verbose': verbose})
 
     if verbose:
