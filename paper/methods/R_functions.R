@@ -3,6 +3,15 @@
 # Load the Python package
 #
 ########################################################################
+# require(reticulate)
+
+# # create a new environment 
+# virtualenv_create("py")
+# virtualenv_install("py", c("numba", "pandas", "numpy", "scipy", "statsmodels", "scikit-learn", "cvxpy", "tqdm"))
+# use_virtualenv("py")
+# See the following document for more details
+# https://rstudio.github.io/reticulate/articles/versions.html
+
 
 # import Python package
 causarray <- import("causarray")
@@ -28,15 +37,12 @@ run_causarray <- function(Y, W, A, r, update_disp_glm=TRUE, W_A='full', ...){
     # confounder adjustment
     if(r>0){
         X <- cbind(W, A)
-        res_gcate <- causarray$fit_gcate(Y, X, r, num_d=a, offset=offset, ...)
-        # res is a list of 2 matrices:
-        # A1 = [X, Z] and A2 = [B, Gamma] where X = [W, A]
-        names(res_gcate) <- c('A1', 'A2', 'info', 'A01', 'A02')
-        Wp <- res_gcate[[1]]
+        res_gcate <- causarray$fit_gcate(Y, W, A, r, offset=offset, ...)[[2]]
+        Wp <- res_gcate$X_U
         Wp <- Wp[,-c((d+1):(d+a))] # remove the column of A
-        disp_glm <- res_gcate[[3]]$kwargs_glm$nuisance
+        disp_glm <- res_gcate$kwargs_glm$nuisance
         Z <- Wp[,(d+1):ncol(Wp)]
-        offset <- log(res_gcate[[3]]$kwargs_glm$size_factor)
+        offset <- log(res_gcate$kwargs_glm$size_factor)
     }else{
         res_gcate <- NULL
         Wp <- W
@@ -58,7 +64,7 @@ run_causarray <- function(Y, W, A, r, update_disp_glm=TRUE, W_A='full', ...){
     }
     res <- do.call(
       causarray$LFC,
-      modifyList(list(alpha=0.1, c=0.1, family='nb', offset=offset, disp_glm=disp_glm), 
+      modifyList(list(fdx_alpha=0.1, fdx_c=0.1, family='nb', offset=offset, disp_glm=disp_glm), 
           list('Y'=Y, 'W'=W_new, 'A'=A, 'W_A'=W_A, ...))
       )
     causarray.df <- res[[1]]
@@ -76,7 +82,7 @@ run_causarray <- function(Y, W, A, r, update_disp_glm=TRUE, W_A='full', ...){
 estimate_r_causarray <- function(Y, W, A, r_max, ...){
     data <- prep_causarray(Y, W, A, ...)
     Y <- data[[1]]; W <- data[[2]]; A <- data[[3]]
-    df_r <- causarray$estimate_r(Y, cbind(W, A), r_max, ...)
+    df_r <- causarray$estimate_r(Y, W, A, r_max, ...)
     df_r
 }
 
@@ -175,11 +181,10 @@ library(MASS)
 #' @param Y Pseudo-bulk gene expression matrix, individual x gene
 #' @param metadata Metadata dataframe with all covariates including column called trt with 1 = treatment/case and 0 = control (factor),
 #'                 numeric features should be centered and scaled, all covariates in this dataframe will be used
-#' @param raw Whether the input data is raw or preprocessed
 #' @param family What time of regression to fit? 'poisson' or 'nb' (negative binomial)
 #' @returns Dataframe containing Wilcoxon statistic, p-value, and adjusted p-value for each gene
 #'
-run_wilcoxon <- function(Y, metadata, raw=F, family='nb') {
+run_wilcoxon <- function(Y, metadata, family='nb') {
   .check_input(Y, metadata)
 
   loglibsize <- log2(rowSums(Y))
@@ -197,25 +202,38 @@ run_wilcoxon <- function(Y, metadata, raw=F, family='nb') {
   fit_regs <- function(gene, Y, metadata, family='poisson') {
     gene_data <- cbind(Y[,gene], metadata)
     colnames(gene_data) <- c('gexp', colnames(metadata))
-    if(family=='poisson'){
-      reg <- glm(gexp ~ . - trt, family="poisson", data=gene_data)
-    }else if(family=='nb'){
-      reg <- glm.nb(gexp ~ . - trt, data=gene_data)
-    }    
-    reg$residuals
-  }  
+    tryCatch({
+      if(family=='poisson'){
+        reg <- glm(gexp ~ . - trt, family="poisson", data=gene_data)
+      }else if(family=='nb'){
+        reg <- glm.nb(gexp ~ . - trt, data=gene_data)
+      }    
+      reg$residuals
+    }, error = function(e) {
+      rep(NA, nrow(metadata))
+    })
+  }
   Y_resid <- do.call("cbind", mclapply(cycle,fit_regs,Y=Y,metadata=metadata,family=family,mc.cores=20,mc.preschedule = T,mc.silent=T))
   colnames(Y_resid) <- cycle
 
   cat('Running Wilcoxon Tests... \n')
   wilcox_test <- function(gene, Y, trt){
-    wilc <- wilcox.test(Y[trt == 1, gene], Y[trt == 0, gene])
-    list('stat' = wilc$statistic, 'pvalue' = wilc$p.value)
+    tryCatch({
+      wilc <- wilcox.test(Y[trt == 1, gene], Y[trt == 0, gene])
+      list('stat' = wilc$statistic, 'pvalue' = wilc$p.value)
+    }, error = function(e) {
+      list('stat' = NaN, 'pvalue' = NaN)
+    })
   }
   test <- mclapply(cycle,wilcox_test,Y=Y_resid,trt=metadata$trt,mc.cores=20,mc.preschedule = T,mc.silent=T)
   wilc_df <- rbindlist(test)
   wilc_df <- as.data.frame(wilc_df)
-  wilc_df['padj'] <- qvalue(wilc_df['pvalue'])$qvalues
+  # Remove NaN values before computing q-values, then put them back
+  valid_idx <- !is.nan(wilc_df$pvalue)
+  wilc_df$padj <- rep(NaN, nrow(wilc_df))
+  if (sum(valid_idx) > 0) {
+    wilc_df$padj[valid_idx] <- qvalue(wilc_df$pvalue[valid_idx])$qvalues
+  }
   rownames(wilc_df) <- cycle
   t1 <- Sys.time()
   print(t1-t0)
@@ -359,9 +377,21 @@ run_cocoa <- function(sc, metadata, indvs = NULL, cocoAWriteName='simu/tmp'){
     A <- metadata$trt
     if(is.null(indvs)){
         indvs <- 1:dim(sc)[1]
+        # indvs <- c()
+        # indv <- 1
+        # prev_trt <- A[1]
+        # for (trt_i in A) {
+        #     if (trt_i != prev_trt) {
+        #         indv <- indv + 1
+        #         prev_trt = trt_i
+        #     } 
+        #     # indvs <- c(indvs, paste0('indv', indv))
+        #     indvs <- c(indvs, indv)
+        # }
     }
 
-    cell2indv <- data.frame(cell=1:dim(sc)[1], indv=indvs)
+    cell2indv <- data.frame(cell=1:dim(sc)[1],#paste0('cell', 1:dim(sc)[1]), 
+                            indv=indvs)
 
     indv2trt <- data.frame(indv=indvs[!duplicated(indvs)],
                         exp=A)

@@ -39,7 +39,7 @@ if((ind != '') && grepl( 'r', ind, fixed = TRUE)){
 
 
 
-for(n in seq(100, 300, 100)){
+for(n in c(100, 500, 1000, 5000)){
     path_result <- sprintf(paste0(path_base,'results/simu_%d%s/'), n, ind)
     dir.create(path_result, recursive=TRUE, showWarnings = FALSE)
 

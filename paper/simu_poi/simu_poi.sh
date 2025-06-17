@@ -1,4 +1,4 @@
-for isimu in  '_d_2_r_1_noise_0.5'
+for isimu in  '_d_2_r_1_noise_1.0'
 do
     python simu_poi_data.py ${isimu}
     cp simu_poi_data.py data/simu_100${isimu}/

@@ -1,14 +1,68 @@
 import os
 import random
 import numpy as np
+import pandas as pd
+
+import inspect
+
+import pprint
+from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
+
 np.set_printoptions(threshold=10)
-import pprint
+
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import host_subplot
-from tqdm import tqdm
-import inspect
+
+
+def prep_causarray_data(Y, A, X=None, X_A=None, intercept=True):
+    """
+    Prepares the input data for the causarray model.
+
+    Parameters
+    ----------
+    Y : array-like
+        The response matrix.
+    A : array-like
+        The treatment matrix.
+    X : array-like, optional
+        The covariate matrix. Defaults to None.
+    X_A : array-like, optional
+        The covariate matrix for the treatment. Defaults to None.
+    intercept : bool, optional
+        Whether to include an intercept in the covariate matrix. Defaults to True.
+
+    Returns
+    -------
+    Y : array
+        The processed response matrix.
+    A : array
+        The processed treatment matrix.
+    X : array
+        The processed covariate matrix.
+    X_A : array
+        The processed covariate matrix with the log library size.
+    """
+    if not isinstance(Y, pd.DataFrame):
+        Y = np.asarray(Y)
+    Y = np.minimum(Y, np.round(np.quantile(np.max(Y, 0), 0.999)))
+    if not isinstance(A, pd.DataFrame):
+        A = np.asarray(A)
+    if A.ndim == 1:
+        A = A[:, None]
+
+    X = np.zeros((Y.shape[0], 0)) if X is None else np.asarray(X)        
+    X_A = X if X_A is None else np.asarray(X_A)
+    loglibsize = np.log2(np.sum(np.asarray(Y), axis=1))
+    loglibsize = (loglibsize - np.mean(loglibsize)) / np.std(loglibsize, ddof=1)
+    X_A = np.hstack((X_A, loglibsize[:, None]))
+
+    intercept_col = np.ones((X.shape[0], 1)) if intercept else np.empty((X.shape[0], 0))
+    X = np.hstack((intercept_col, X))
+    X_A = np.hstack((intercept_col, X_A))
+
+    return Y, A, X, X_A
 
 
 def reset_random_seeds(seed):

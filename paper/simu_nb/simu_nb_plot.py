@@ -37,9 +37,10 @@ method_list = ['wilc', 'DESeq', 'cocoa', 'cinemaot', 'cinemaotw'] \
     + ['causarray_r_{}'.format(r) for r in r_list]
 c = 0.1
 alpha = 0.1
+n_list = [100, 500, 1000, 5000]
 
 df_res = pd.DataFrame()
-for n in range(100,320,100):    
+for n in n_list:
     path_data = path_base+'data/simu_{}{}/'.format(n, ind)
     path_result = path_base+'results/simu_{}{}/'.format(n, ind)
 
@@ -82,6 +83,10 @@ for n in range(100,320,100):
 df_res.reset_index(drop=True, inplace=True)
 df_res.to_csv(path_base+'results/result{}_test.csv'.format(ind))
 
+print(df_res.groupby(['n','method'])[['typeI_err', 'FDR', 'power', 'FDX', 'num_dis']].median())
+
+
+
 
 
 
@@ -95,7 +100,7 @@ method_list = ['cocoa', 'cinemaot', 'cinemaotw']  \
 r = 2
 
 df_res = pd.DataFrame()
-for n in range(100,320,100):
+for n in n_list:
     path_data = path_base+'data/simu_{}{}/'.format(n, ind)
     path_result = path_base+'results/simu_{}{}/'.format(n, ind)
 

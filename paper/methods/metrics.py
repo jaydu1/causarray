@@ -31,7 +31,7 @@ def comp_score(Y, CF, celltype, Z, W_hat=None):
     
     # sc.pp.normalize_total(adata)
     # sc.pp.log1p(adata)
-    scib.preprocessing.reduce_data(adata, pca_comps=np.minimum(50, CF.shape[0]-1))
+    scib.preprocessing.reduce_data(adata, pca_comps=np.minimum(50, CF.shape[0]-1), n_top_genes=adata.shape[1])
 
     adata.obs['celltype'] = celltype
     adata.obs['celltype'] = adata.obs['celltype'].astype("category")

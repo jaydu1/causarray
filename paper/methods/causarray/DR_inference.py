@@ -1,19 +1,18 @@
 import numpy as np
+import scipy as sp
 import statsmodels.api as sm
 from scipy.stats import norm
+from statsmodels.stats.multitest import multipletests, fdrcorrection
 
 
-
-def multiplier_bootstrap(resid, theta_var, B):
+def multiplier_bootstrap(eta, B):
     '''
     Multiplier bootstrap for inference.
 
     Parameters
     ----------
-    resid : array-like
-        [n, p] Residuals.
-    theta_var : array-like
-        [p,] Variance of the parameter estimates.
+    eta : array-like
+        [n, p] Influence function values scaled by inversion of standard deviation.
     B : int
         Number of bootstrap samples.
 
@@ -22,16 +21,12 @@ def multiplier_bootstrap(resid, theta_var, B):
     z_init : array-like
         [B, p] Bootstrap statistics for each hypothesis.
     '''
-    n, p = resid.shape
+    n, p = eta.shape
     B = int(B)
     z_init = np.zeros((B,p))
-    eta = resid / np.sqrt(n * theta_var[None,:])
     for b in range(B):
         g = np.random.normal(size=n)
         z_init[b, :] = np.sum(eta * g[:, None], axis=0)
-
-    # g = np.random.normal(size=(B,n,1))
-    # z_init = np.sum(resid[None, :,:] * g, axis=1) / np.sqrt(n * theta_var[None,:])
 
     return z_init
     
@@ -66,7 +61,7 @@ def step_down(tvalues_init, z_init, alpha):
         tvalues_max = np.max(np.abs(tvalues))
         index_temp = np.unravel_index(np.argmax(np.abs(tvalues)), tvalues.shape)
         z_max = np.max(np.abs(z), axis=1)
-        z_max_quan = np.quantile(z_max, 1 - alpha, interpolation='lower')
+        z_max_quan = np.quantile(z_max, 1 - alpha, method='lower')
         if tvalues_max < z_max_quan or z_max_quan == 0:
             break
         tvalues[index_temp] = 0
@@ -104,3 +99,97 @@ def augmentation(V, tvalues, c):
     return V
 
 
+def fdx_control(
+    tau_est, tvalues_init, eta_est, std_est,
+    fdx, B, alpha, c, 
+    min_var=1e-8, min_diff=0.1
+    ):
+    '''
+    Perform FDX control.
+
+    Parameters
+    ----------
+    tau_est : array-like
+        The estimated causal effect.    
+    tvalues_init : array-like
+        The estimated t-values.
+    eta_est : array-like
+        The estimated influence function values, scaled by inversion of standard deviation.
+    std_est : array-like
+        The estimated standard deviation.
+    fdx : bool
+        If True, perform FDX control.
+    B : int
+        Number of bootstrap samples.
+    alpha : float
+        The significance level.
+    c : float
+        Augmentation parameter.  
+    
+
+    Returns
+    -------
+    V : array-like
+        FDX control results, 0 for non-discoveries and 1 for discoveries.
+    '''
+    n = eta_est.shape[0]
+
+    if fdx:
+        id_test = std_est >= min_var
+        z_init = multiplier_bootstrap(eta_est / std_est[None,:], B)
+        z_init[:, ~id_test] = 0.
+        tvalues = tvalues_init.copy()
+        tvalues[~id_test] = 0.
+        V, tvalues, z = step_down(tvalues, z_init, alpha)
+
+        V[(~id_test) & (np.abs(tau_est) > min_diff)] = 1.
+        V = augmentation(V, tvalues, c)
+    else:
+        V = np.zeros(tvalues_init.shape[0])
+
+    return V
+
+
+def bh_correction(tvalues_init):
+    '''
+    Perform BH correction.
+
+    Parameters
+    ----------
+    tvalues_init : array-like
+        Initial t-values.
+
+    Returns
+    -------
+    pvals : array-like
+        P-values.
+    qvals : array-like
+        Q-values.
+    pvals_adj : array-like
+        P-values after empirical null adjustment.
+    qvals_adj : array-like
+        Q-values after empirical null adjustment.
+    '''
+    idx = ~np.isnan(tvalues_init)
+
+    # BH correction
+    pvals = np.full(tvalues_init.shape, np.nan)
+    qvals = np.full(tvalues_init.shape, np.nan)
+    pvals_adj = np.full(tvalues_init.shape, np.nan)
+    qvals_adj = np.full(tvalues_init.shape, np.nan)
+
+    if np.sum(idx) > 0:
+        pvals[idx] = sp.stats.norm.sf(np.abs(tvalues_init[idx]))*2
+        qvals[idx] = multipletests(pvals[idx], alpha=0.05, method='fdr_bh')[1]
+
+        # BH correction with empirical null adjustment
+        med = np.nanmedian(tvalues_init[idx])
+        mad = sp.stats.median_abs_deviation(tvalues_init[idx], scale="normal", nan_policy='omit')
+        
+        if mad>0:
+            tvalues_init_adj = (tvalues_init - med) / mad
+
+            pvals_adj[idx] = sp.stats.norm.sf(np.abs(tvalues_init_adj[idx]))*2
+            qvals_adj[idx] = multipletests(pvals_adj[idx], alpha=0.05, method='fdr_bh')[1]
+    
+    return pvals, qvals, pvals_adj, qvals_adj

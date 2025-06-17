@@ -43,7 +43,7 @@ if((ind != '') && grepl( 'noise', ind, fixed = TRUE)){
 
 path_base = '/home/jinandmaya/simu_nb/'
 
-for(n in seq(100, 300, 100)){
+for(n in c(100, 500, 1000, 5000)){
     path_data <- sprintf(paste0(path_base,'data/simu_%d%s/'), n, ind)
     dir.create(path_data, recursive=TRUE, showWarnings = FALSE)
     for(seed in c(0:49)){

@@ -16,7 +16,7 @@ p <- 2000
 c = 0.1
 alpha = 0.1
 
-ind <- '_d_0_r_4_noise_0.5'
+ind <- '_d_0_r_4_noise_1.0'
 num_r <- 1
 
 args = commandArgs(trailingOnly=TRUE)
@@ -39,12 +39,10 @@ if((ind != '') && grepl( 'noise', ind, fixed = TRUE)){
 }else{
     noise <- 1.
 }
-# num_r <- num_r + 2
 
-for(n in seq(100, 320, 100)){
-    # if(n<=125 || n==200){
-    #     next
-    # }
+
+for(n in c(100,500,1000,5000)){
+
     path_result <- sprintf(paste0(path_base,'results/simu_%d%s/'), n, ind)
     dir.create(path_result, recursive=TRUE, showWarnings = FALSE)
 
@@ -152,11 +150,8 @@ for(n in seq(100, 320, 100)){
                 #     # max_depth=as.integer(5), func='LFC'
                 #     )[[1]]
 
-                # if(file.exists(sprintf('%scausarray_nb_%d.csv', path_result, seed))){
-                #     next
-                # }
                 res.causarray <- run_causarray(Y, scaleW[,-ncol(scaleW)], A, 
-                    fdx=T, r=r_hat, glm_alpha=.5, shrinkage=T)
+                    fdx=T, r=r_hat, glm_alpha=.5, shrinkage=T, usevar = 'unequal')
                 cf.causarray <- log1p(res.causarray[[2]]$Y_hat_0)
                 W.causarray <- res.causarray[[2]]$W
                 res.causarray <- res.causarray[[1]]

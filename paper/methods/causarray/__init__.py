@@ -1,22 +1,21 @@
-__all__ = [#'ATE', 'SATE', 'FC', 
-'LFC', 'fit_glm', 'reset_random_seeds', 'fit_gcate']
+__all__ = [
+    'LFC', #'ATE', 'SATE', 'FC', 
+    'fit_glm', 'reset_random_seeds', 'fit_gcate'
+    ]
 
-# from causarray.DR_learner import ATE, SATE, FC, LFC
-from causarray.DR_learner import LFC
+
+from causarray.DR_learner import LFC # ATE, SATE, FC
 from causarray.gcate_glm import fit_glm
-from causarray.utils import reset_random_seeds, comp_size_factor
+from causarray.utils import prep_causarray_data, reset_random_seeds, comp_size_factor
 
-# from causarray.gcate_likelihood import *
-# from causarray.gcate_opt import *
 from causarray.gcate import *
-
+from causarray.__about__ import __version__
 
 __license__ = "MIT"
-__version__ = "1.0.0"
-__author__ = ""
-__email__ = ""
-__maintainer__ = ""
-__maintainer_email__ = ""
+
+__author__ = "Jin-Hong Du, Maya Shen, Hansruedi Mathys, and Kathryn Roeder"
+__maintainer__ = "Jin-Hong Du"
+__maintainer_email__ = "jinhongd@andrew.cmu.edu"
 __description__ = ("Causarray: A Python package for simultaneous causal inference"
     " with an array of outcomes."
     )

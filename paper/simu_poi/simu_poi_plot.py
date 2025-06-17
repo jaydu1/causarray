@@ -24,7 +24,7 @@ def legend_title_left(leg):
     c._children = [hpack]
     hpack._children = [title] + hpack.get_children()
 
-n_list = [100,200,300]
+n_list = [100, 500, 1000, 5000]
 p = 2000
 if len(sys.argv)>1:
     ind = str(sys.argv[1])
@@ -150,7 +150,7 @@ df_res.to_csv(path_base+'results/result{}_deconfound.csv'.format(ind))
 path_base = '/home/jinandmaya/simu_poi/'
 df_test = pd.read_csv(path_base+'results/result{}_test.csv'.format(ind)).rename({'FDR':'FPR', 'power':'TPR'}, axis=1)
 df_cf = pd.read_csv(path_base+'results/result{}_deconfound.csv'.format(ind))
-r_list = [int(ind.split('_r_')[-1].split('_')[0])]
+r_list = [2]
 
 method_name = {'wilc':'Wilcoxon', 'DESeq':'DESeq2', 'cocoa':'CoCoA', 'cinemaot':'CINEMA-OT', 'cinemaotw':'CINEMA-OT-W',
     }
@@ -203,3 +203,5 @@ legend_title_left(legend)
 fig.tight_layout()
 fig.subplots_adjust(top=0.85)
 plt.savefig(path_base + 'results/simu_poi{}.pdf'.format(ind), bbox_inches='tight', pad_inches=0, dpi=300)
+
+print('Done')

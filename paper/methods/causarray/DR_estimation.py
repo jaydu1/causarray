@@ -2,54 +2,11 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from causarray.gcate_glm import fit_glm
+from causarray.utils import *
 from causarray.utils import _filter_params
 import pprint
 
-
-def AIPW_mean(y, A, mu, pi, pseudo_outcome=False, positive=False):
-    '''
-    Augmented inverse probability weighted estimator (AIPW)
-
-    Parameters
-    ----------
-    y : array
-        Outcomes.
-    A : array
-        Binary treatment indicator.
-    mu : array
-        Conditional outcome distribution estimate.
-    pi : array
-        Propensity score.
-    pseudo_outcome : bool, optional
-        Whether to return the pseudo-outcome. The default is False.
-    positive : bool, optional
-        Whether to restrict the pseudo-outcome to be positive.
-
-    Returns
-    -------
-    tau : array
-        A point estimate of the expected potential outcome.
-    pseudo_y : array
-        Pseudo-outcome if `pseudo_outcome = True`.
-    '''
-    weight = A / pi
-    if len(mu.shape)>2:
-        weight = weight[:,None,:]
-        y = y[:,:,None]
-    pseudo_y = weight * (y - mu) + mu
-    
-    if positive:
-        pseudo_y = np.clip(pseudo_y, 0, None)
-
-    tau = np.mean(pseudo_y, axis=0)
-
-    if pseudo_outcome:
-        return tau, pseudo_y
-    else:
-        return tau
-    
-
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, ShuffleSplit
 
 def _get_func_ps(ps_model, **kwargs):
     if ps_model=='random_forest_cv':
@@ -74,42 +31,52 @@ def _get_func_ps(ps_model, **kwargs):
 
 
 def cross_fitting(
-    Y, X, A, X_A=None, family='poisson', K=1, glm_alpha=1e-4,
-    ps_model='logistic', verbose=False, **kwargs):
+    Y, A, X, X_A, family='poisson', K=1, glm_alpha=1e-4,
+    ps_model='logistic', 
+    Y_hat=None, pi_hat=None, mask=None, verbose=False, **kwargs):
     '''
     Cross-fitting for causal estimands.
 
     Parameters
     ----------
     Y : array
-        Outcomes.
-    X : array
-        Covariates.
+        Outcomes.    
     A : array
         Binary treatment indicator.
-    X_A : array, optional
-        Covariates for the propensity score model. The default is None for using X.
+    X : array
+        Covariates.
+    X_A : array
+        Covariates for the propensity score model.
     family : str, optional
         The family of the generalized linear model. The default is 'poisson'.
     K : int, optional
         The number of folds for cross-validation. The default is 1.
+    glm_alpha : float, optional
+        The regularization parameter for the generalized linear model. The default is 1e-4.
+    ps_model : str, optional
+        The propensity score model. The default is 'logistic'.
+    
+    Y_hat : array, optional
+        Estimated potential outcome of shape (n, p, a, 2). The default is None.
+    pi_hat : array, optional
+        Propensity score of shape (n, a). The default is None.
+    mask : array, optional
+        Boolean mask of shape (n, a) for the treatment, indicating which samples are used for 
+        the estimation of the estimand. This does not affect the estimation of pseudo-outcomes
+        and propensity scores.
+
     **kwargs : dict
         Additional arguments to pass to the model.
 
     Returns
-    -------
-    pi_arr : array
-        Propensity score.
-    Y_hat_0_arr : array
+    -------    
+    Y_hat : array
         Estimated potential outcome under control.
-    Y_hat_1_arr : array
-        Estimated potential outcome under treatment.    
+    pi_hat : array
+        Estimated propensity score.
     '''
-    if X_A is None:
-        X_A = X
-    
-    func_ps, params_ps = _get_func_ps(ps_model, **kwargs)
-    params_glm = _filter_params(fit_glm, kwargs)
+    func_ps, params_ps = _get_func_ps(ps_model, verbose=False, **kwargs)
+    params_glm = _filter_params(fit_glm, {**kwargs, 'verbose': verbose})
 
     if verbose:
         pprint.pprint(params_ps)
@@ -123,9 +90,10 @@ def cross_fitting(
         folds = [(np.arange(X.shape[0]), np.arange(X.shape[0]))]
 
     # Initialize lists to store results
-    pi_arr = np.zeros_like(A, dtype=float)
-    Y_hat_0_arr = np.zeros((Y.shape[0],Y.shape[1],A.shape[1]), dtype=float)
-    Y_hat_1_arr = np.zeros((Y.shape[0],Y.shape[1],A.shape[1]), dtype=float)
+    fit_pi = True if pi_hat is None else False
+    pi_hat = np.zeros_like(A, dtype=float) if fit_pi else pi_hat
+    fit_Y = True if Y_hat is None else False
+    Y_hat = np.zeros((Y.shape[0],Y.shape[1],A.shape[1],2), dtype=float) if fit_Y else Y_hat
 
     # Perform cross-fitting
     for train_index, test_index in folds:
@@ -135,84 +103,87 @@ def cross_fitting(
         A_train, A_test = A[train_index], A[test_index]
         Y_train, Y_test = Y[train_index], Y[test_index]
 
-        i_ctrl = (np.sum(A_train, axis=1) == 0.)
+        if fit_pi:
+            if verbose: pprint.pprint('Fit propensity score models...')
+            i_ctrl = (np.sum(A_train, axis=1) == 0.)
 
-        pi = np.zeros_like(A_test, dtype=float)
-        for j in range(A.shape[1]):
-            i_case = (A_train[:,j] == 1.)
-            i_cells = i_ctrl | i_case
+            pi = np.zeros_like(A_test, dtype=float)
+            for j in range(A.shape[1]):
+                i_case = (A_train[:,j] == 1.)
 
-            if ps_model=='logistic' and XA_train.shape[1]==1 and np.all(XA_train==1):
-                prob = np.sum(i_case)/np.sum(i_cells)
-                pi[A_train[:,j] == 1., j] = prob
-                pi[A_train[:,j] == 0., j] = 1 - prob
-            else:
-                pi[:,j] = func_ps(XA_train[i_cells], A_train[i_cells][:,j], XA_test)
+                if mask is not None:
+                    i_cells = mask[:, j]
+                else:
+                    i_ctrl = (np.sum(A_train, axis=1) == 0.)
+                    i_cells = i_ctrl | i_case
 
-        # Fit GLM on training data and predict on test data
-        res = fit_glm(Y_train, X_train, A_train, family=family, alpha=glm_alpha,
-            impute=X_test, **params_glm)
-        
-        # Store results
-        pi_arr[test_index] = pi
-        
-        Y_hat_0_arr[test_index] = res[1][0]
-        Y_hat_1_arr[test_index] = res[1][1]
+                if ps_model=='logistic' and XA_train.shape[1]==1 and np.all(XA_train==1):
+                    prob = np.sum(i_case)/np.sum(i_cells)
+                    pi[A_train[:,j] == 1., j] = prob
+                    pi[A_train[:,j] == 0., j] = 1 - prob
+                else:
+                    pi[:,j] = func_ps(XA_train[i_cells], A_train[i_cells][:,j], XA_test)
+            pi_hat[test_index] = pi
 
-    pi_arr = np.clip(pi_arr, 0.01, 0.99)
-    return pi_arr, Y_hat_0_arr, Y_hat_1_arr
+        if fit_Y:
+            if verbose: pprint.pprint('Fit outcome models...')
+            # Fit GLM on training data and predict on test data
+            res = fit_glm(Y_train, X_train, A_train, family=family, alpha=glm_alpha,
+                impute=X_test, **params_glm)
+            Y_hat[test_index,:,:,0] = res[1][0]
+            Y_hat[test_index,:,:,1] = res[1][1]
 
-
-def fit_ps(X, A, ps_model='logistic', **kwargs):
-    func_ps, params_ps = _get_func_ps(ps_model, **kwargs)
-
-    i_ctrl = (np.sum(A, axis=1) == 0.)
-
-    pi = np.zeros_like(A, dtype=float)
-    for j in range(A.shape[1]):
-        i_case = (A[:,j] == 1.)
-        i_cells = i_ctrl | i_case
-
-        if ps_model=='logistic' and X.shape[1]==1 and np.all(X==1):
-            prob = np.sum(i_case)/np.sum(i_cells)
-            pi[i_case, j] = prob
-            pi[~i_case, j] = 1 - prob
-        else:
-            pi[:, j] = func_ps(X[i_cells], A[i_cells][:, j], X)
-
-    pi = np.clip(pi, 0.01, 0.99)
-    return pi
+    pi_hat = np.clip(pi_hat, 0.01, 0.99)
+    Y_hat = np.clip(Y_hat, None, 1e5)
+    return Y_hat, pi_hat
 
 
-from sklearn.model_selection import ShuffleSplit
 
-def est_var(eta_0, eta_1, n_splits=10, thres_diff=1e-6, log=False):
-    eta = np.zeros_like(eta_0)
-    tau = np.zeros(eta_0.shape[1])
-    var = np.zeros(eta_0.shape[1])
-    rs = ShuffleSplit(n_splits=n_splits, train_size=0.5, test_size=.5, random_state=0)
-    for (train_i, test_i) in rs.split(eta_0):
-        for (train_index, test_index) in [(train_i, test_i), (test_i, train_i)]:
-            tau_1 = np.mean(eta_1[test_index], axis=0)
-            tau_0 = np.mean(eta_0[test_index], axis=0)
-            if log:
-                tau_1 = np.clip(tau_1, thres_diff, None)
-                tau_0 = np.clip(tau_0, thres_diff, None)
-                tau_estimate = np.log(tau_1/tau_0)
-            else:
-                tau_estimate = tau_1/tau_0 - 1
-            _eta = (eta_1 - eta_0)[train_index] / tau_0[None,:] - eta_0[train_index] * (tau_estimate / tau_0)[None,:]
-            _var = np.var(_eta, axis=0, ddof=1)
-            idx = np.isnan(tau_estimate)
-            tau_estimate[idx] = 0.; _eta[:,idx] = 0.; _var = np.inf
 
-            tau += tau_estimate
-            eta[train_index] += _eta
-            var += _var
-    tau /= 2*n_splits
-    eta /= n_splits
-    var /= 2*n_splits
-    return tau, eta, var
+
+def AIPW_mean(Y, A, mu, pi, positive=False):
+    '''
+    Augmented inverse probability weighted estimator (AIPW)
+
+    Parameters
+    ----------
+    Y : array
+        Outcomes of shape (n, p).
+    A : array
+        Binary treatment indicator of shape (n, a, 2).
+    mu : array
+        Conditional outcome distribution estimate of shape (n, p, a, 2).
+    pi : array
+        Propensity score of shape (n, a, 2).
+    positive : bool, optional
+        Whether to restrict the pseudo-outcome to be positive.
+
+    Returns
+    -------
+    tau : array
+        A point estimate of the expected potential outcome of shape (p, a, 2).
+    pseudo_y : array
+        Pseudo-outcome of shape (n, p, a, 2).
+    '''
+    
+    weight = A / pi
+    weight = weight[:, None, ...]
+    Y = Y[:, :, None, None]
+
+    pseudo_y = weight * (Y - mu) + mu
+    
+    if positive:
+        pseudo_y = np.clip(pseudo_y, 0, None)
+
+    tau = np.mean(pseudo_y, axis=0)
+
+    return tau, pseudo_y
+    
+
+
+
+
+
 
 
 
