@@ -8,7 +8,7 @@ date: "`r format(Sys.time(), '%d %B, %Y')`"
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-setwd("/Users/dujinhong/Documents/study/Kathryn Roeder/Project/causarray/causarray/docs/source/tutorial")
+setwd("/Users/dujinhong/Documents/study/Kathryn Roeder/Project/causarray/causarray/docs/source/tutorial/perturbseq")
 ```
 
 
