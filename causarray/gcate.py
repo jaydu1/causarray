@@ -82,7 +82,8 @@ def fit_gcate(Y, X, A, r, family='nb', disp_glm=None, disp_family=None, offset=T
     kwargs : dict
         Additional keyword arguments.
     '''
-
+    if X.ndim == 1: X = X[:, None]
+    if A.ndim == 1: A = A[:, None]
     X = np.hstack((X, A))
     a = A.shape[1]
     Y, kwargs_glm, lam1 = _check_input(Y, X, family, disp_glm, disp_family, offset, c1, **kwargs)    
@@ -195,6 +196,8 @@ def estimate_r(Y, X, A, r_max, c=1.,
     df_r : DataFrame
         Results of the number of latent factors.
     '''
+    if X.ndim == 1: X = X[:, None]
+    if A.ndim == 1: A = A[:, None]
     a, d = A.shape[1], X.shape[1]
     X = np.hstack((X, A))    
     n, p = Y.shape

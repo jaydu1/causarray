@@ -65,19 +65,16 @@ def compute_causal_estimand(
     '''
     reset_random_seeds(random_state)
 
-    kwargs = {k:v for k,v in kwargs.items() if k not in 
-        ['kwargs_ls_1', 'kwargs_ls_2', 'kwargs_es_1', 'kwargs_es_2', 'c1', 'num_d']
-    }
-
+    # check the input data
     if isinstance(Y, pd.DataFrame):
         gene_names = Y.columns
         Y = Y.values
     else:
         gene_names = range(Y.shape[1])
+    Y = Y.astype('float')
     n, p = Y.shape
 
-    if len(A.shape) == 1:
-        A = A.reshape(-1,1)
+    if A.ndim == 1: A = A[:, None]
     if isinstance(A, pd.DataFrame):
         trt_names = A.columns
         A = A.values
@@ -97,7 +94,10 @@ def compute_causal_estimand(
         if len(mask.shape) == 1: mask = mask.reshape(-1,1)
         if mask.shape != A.shape:
             raise ValueError('Mask must have the same shape as the treatment matrix')
-    
+
+    kwargs = {k:v for k,v in kwargs.items() if k not in 
+        ['kwargs_ls_1', 'kwargs_ls_2', 'kwargs_es_1', 'kwargs_es_2', 'c1', 'num_d']
+    }
 
     if verbose:
         d_A = W_A.shape[1]
@@ -113,10 +113,9 @@ def compute_causal_estimand(
     else:
         offset = None
         size_factors = np.ones(n)
-
-    Y = Y.astype('float')
+    
     Y_hat, pi_hat = cross_fitting(Y, A, W, W_A, family=family, offset=offset, 
-        Y_hat=Y_hat, pi_hat=pi_hat, random_state=random_state, verbose=verbose, **kwargs)
+        Y_hat=Y_hat, pi_hat=pi_hat, mask=mask, random_state=random_state, verbose=verbose, **kwargs)
     pi_hat = pi_hat.reshape(*A.shape)
 
     if verbose: pprint.pprint('Estimating AIPW mean...')
@@ -201,6 +200,9 @@ def LFC(
         Boolean mask of shape (n, a) for the treatment, indicating which samples are used for 
         the estimation of the estimand. This does not affect the estimation of pseudo-outcomes
         and propensity scores.
+    usevar : str
+        The method to use for estimating the variance of treatment effects. 
+        Options are 'pooled' (default) or 'unequal'.
     
     thres_min : float
         The minimum threshold for the treatment effect.

@@ -33,7 +33,7 @@ def _get_func_ps(ps_model, **kwargs):
 def cross_fitting(
     Y, A, X, X_A, family='poisson', K=1, glm_alpha=1e-4,
     ps_model='logistic', 
-    pi_hat=None, Y_hat=None, verbose=False, **kwargs):
+    Y_hat=None, pi_hat=None, mask=None, verbose=False, **kwargs):
     '''
     Cross-fitting for causal estimands.
 
@@ -55,10 +55,16 @@ def cross_fitting(
         The regularization parameter for the generalized linear model. The default is 1e-4.
     ps_model : str, optional
         The propensity score model. The default is 'logistic'.
-    pi_hat : array, optional
-        Propensity score of shape (n, a). The default is None.
+    
     Y_hat : array, optional
         Estimated potential outcome of shape (n, p, a, 2). The default is None.
+    pi_hat : array, optional
+        Propensity score of shape (n, a). The default is None.
+    mask : array, optional
+        Boolean mask of shape (n, a) for the treatment, indicating which samples are used for 
+        the estimation of the estimand. This does not affect the estimation of pseudo-outcomes
+        and propensity scores.
+
     **kwargs : dict
         Additional arguments to pass to the model.
 
@@ -104,7 +110,12 @@ def cross_fitting(
             pi = np.zeros_like(A_test, dtype=float)
             for j in range(A.shape[1]):
                 i_case = (A_train[:,j] == 1.)
-                i_cells = i_ctrl | i_case
+
+                if mask is not None:
+                    i_cells = mask[:, j]
+                else:
+                    i_ctrl = (np.sum(A_train, axis=1) == 0.)
+                    i_cells = i_ctrl | i_case
 
                 if ps_model=='logistic' and XA_train.shape[1]==1 and np.all(XA_train==1):
                     prob = np.sum(i_case)/np.sum(i_cells)

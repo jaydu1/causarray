@@ -49,6 +49,8 @@ def prep_causarray_data(Y, A, X=None, X_A=None, intercept=True):
     Y = np.minimum(Y, np.round(np.quantile(np.max(Y, 0), 0.999)))
     if not isinstance(A, pd.DataFrame):
         A = np.asarray(A)
+    if A.ndim == 1:
+        A = A[:, None]
 
     X = np.zeros((Y.shape[0], 0)) if X is None else np.asarray(X)        
     X_A = X if X_A is None else np.asarray(X_A)

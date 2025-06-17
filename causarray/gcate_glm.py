@@ -41,15 +41,29 @@ def fit_glm(Y, X, A=None, family='gaussian', disp_family='poisson',
     A : array
         n x 1 vector of treatments or None
     family : str
-        family of GLM to fit, can be one of: 'gaussian', 'poisson', 'nb'
+        Family of GLM to fit, can be one of: 'gaussian', 'poisson', 'nb'
     disp_glm : array or None
-        dispersion parameter for negative binomial GLM
-    return_df : bool
-        whether to return results as DataFrame
-    impute : bool
-        whether to impute potential outcomes and get predicted values
+        Dispersion parameter for negative binomial GLM.
+    impute : bool or None
+        Whether to impute missing values in Y.        
     offset : bool
-        whether to use log of sum of Y as offset
+        Whether to use log of sum of Y as offset.
+    shrinkage : bool
+        Whether to use regularized GLM.
+    alpha : float
+        Regularization parameter for regularized GLM.
+    maxiter : int
+        Maximum number of iterations for GLM fitting.
+    thres_disp : float
+        Threshold for dispersion parameter for negative binomial GLM.
+    n_jobs : int
+        Number of jobs to run in parallel.
+    random_state : int
+        Random seed for reproducibility.
+    verbose : bool
+        Whether to print progress messages.
+    kwargs : dict
+        Additional arguments to pass to GLM fitting.
 
     Returns
     -------
