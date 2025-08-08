@@ -31,7 +31,7 @@ if len(sys.argv)>1:
 else:
     ind = ''
 r_list = [2,4,6]
-method_list = ['wilc', 'DESeq', 'cocoa', 'cinemaot', 'cinemaotw'] \
+method_list = ['wilc', 'DESeq', 'cocoa', 'cinemaot', 'cinemaotw', 'mixscape'] \
     + ['ruv_r_{}'.format(r) for r in r_list] \
     + ['ruv3nb_r_{}'.format(r) for r in r_list] \
     + ['causarray_r_{}'.format(r) for r in r_list]
@@ -85,7 +85,7 @@ df_res.to_csv(path_base+'results/result{}_test.csv'.format(ind))
 
 
 
-method_list = ['cocoa', 'cinemaot', 'cinemaotw']  \
+method_list = ['cocoa', 'cinemaot', 'cinemaotw', 'mixscape']  \
     + ['ruv_r_{}'.format(r) for r in r_list] \
     + ['ruv3nb_r_{}'.format(r) for r in r_list] \
     + ['causarray_r_{}'.format(r) for r in r_list]
@@ -108,7 +108,6 @@ for n in n_list:
             Y = np.array(f['Y'], dtype='float') / np.exp(W[:,:-r] @ B[:-r,:])
             Z = W[:,-1:]
             metadata = np.array(f['metadata'], dtype='float')
-
             celltype = metadata[np.unique(metadata[:,1], return_index=True)[1],-1].astype(int)
         print(seed)
 
@@ -126,7 +125,7 @@ for n in n_list:
                 if not os.path.exists(filename):
                     print(method, 'cf')
                     break
-                CF = pd.read_csv(filename, index_col=0).values
+                CF = pd.read_csv(filename, index_col=0).values.astype(float)
                 res = comp_score(Y, CF, celltype, Z, W_hat)
                 res = np.r_[[method, seed], res]
 
@@ -152,10 +151,9 @@ df_test = pd.read_csv(path_base+'results/result{}_test.csv'.format(ind)).rename(
 df_cf = pd.read_csv(path_base+'results/result{}_deconfound.csv'.format(ind))
 r_list = [2]
 
-method_name = {'wilc':'Wilcoxon', 'DESeq':'DESeq2', 'cocoa':'CoCoA', 'cinemaot':'CINEMA-OT', 'cinemaotw':'CINEMA-OT-W',
+method_name = {'wilc':'Wilcoxon', 'DESeq':'DESeq2', 'cocoa':'CoCoA', 'cinemaot':'CINEMA-OT', 'cinemaotw':'CINEMA-OT-W', 'mixscape':'Mixscape',
     }
-
-    
+ 
 method_name.update(
     reduce(lambda a, b: dict(a, **b), 
     [{'ruv_r_{}'.format(r):'RUV' for r in r_list}, 
@@ -163,7 +161,6 @@ method_name.update(
       {'causarray_r_{}'.format(r):'causarray' for r in r_list} 
     ])
     )
-
 
 df_test = df_test[df_test['method'].isin(method_name.keys())]
 df_cf = df_cf[df_cf['method'].isin(method_name.keys())]
@@ -185,7 +182,7 @@ for j, metric in enumerate(['FPR', 'TPR']):
 
 for j, metric in enumerate(['ARI', 'ASW']):
     sns.barplot(data=df_cf, x='n', y=metric, hue='method', hue_order=hue_order,
-        ax=axes[j], palette=palette)#, showfliers=False)
+        ax=axes[j], palette=palette)
 
 axes[2].axhline(0.1, color='r', linestyle='--')
 lines_labels = [ax.get_legend_handles_labels() for ax in [axes[1]]]

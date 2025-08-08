@@ -86,7 +86,7 @@ def generate_data(
 
     if d > 0:
         # Generate covariates and treatment assignment
-        _W = np.random.normal(size=(n_samples,d)) * 0.5#noise
+        _W = np.random.normal(size=(n_samples,d)) * 0.5
         _W[:,-r:] *= noise
         _W = (_W + ct_mean) * ct_scale
         W = np.c_[W, _W]
@@ -158,7 +158,7 @@ if __name__ == "__main__":
     psi = 0.1 # zero-inflation probability
 
     # Save data to HDF5 file
-    for n in range(100,320,100):
+    for n in [100, 500, 1000, 5000]:
         path_to_data = '/home/jinandmaya/simu_poi/data/simu_{}{}/'.format(n, ind)
         os.makedirs(path_to_data, exist_ok=True)
         for seed in tqdm(range(50)):

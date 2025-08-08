@@ -1,4 +1,5 @@
 library(rhdf5)
+
 # Load Python and R functions for basic Wilcoxon Tests, DESeq2, and CocoA-Diff
 # and causarray, cinemaot
 require(reticulate)
@@ -16,8 +17,9 @@ p <- 2000
 c = 0.1
 alpha = 0.1
 
-ind <- '_d_0_r_4_noise_1.0'
+ind <- '_d_2_r_1_noise_0.5'
 num_r <- 1
+noise <- 1.
 
 args = commandArgs(trailingOnly=TRUE)
 if(length(args)==0){
@@ -35,13 +37,12 @@ if((ind != '') && grepl( 'r', ind, fixed = TRUE)){
 
 if((ind != '') && grepl( 'noise', ind, fixed = TRUE)){
     library(stringr)
-    noise <- as.double(str_extract(ind, "(?<=noise_)[0-9]*"))
+    noise <- as.double(str_extract(ind, "(?<=noise_)[0-9]+(\\.[0-9]+)?"))
 }else{
-    noise <- 1.
+    noise <- 1
 }
 
-
-for(n in c(100,500,1000,5000)){
+for(n in c(100, 500, 1000, 5000)){
 
     path_result <- sprintf(paste0(path_base,'results/simu_%d%s/'), n, ind)
     dir.create(path_result, recursive=TRUE, showWarnings = FALSE)
@@ -75,7 +76,7 @@ for(n in c(100,500,1000,5000)){
         possibleError <- tryCatch(
             {
             # Wilcoxon Tests ----
-            res.wilc <- run_wilcoxon(Y, metadata=scaleW, raw=T)
+            res.wilc <- run_wilcoxon(Y, metadata=scaleW)
 
             # # DESeq ----
             res.DESeq <- run_DESeq(Y, metadata=scaleW, return_ds=TRUE)
@@ -87,7 +88,6 @@ for(n in c(100,500,1000,5000)){
             cocoa <- run_cocoa(sc = Y_sc, indvs=metadata[,2], metadata=scaleW, cocoAWriteName=sprintf('%stmp_cocoa/tmp_%d', path_result, seed))
             res.cocoa <- cocoa[[1]]
             cf.cocoa <- t(cocoa[[2]]$cf.ln.mu)
-            
 
             # CINEMA-OT ---- run_cinemaot returns list(df, CF, TE)
             res.cinemaot <- run_cinemaot(Y, A, raw=TRUE)        
@@ -99,8 +99,6 @@ for(n in c(100,500,1000,5000)){
             cf.cinemaotw <- res.cinemaotw[[2]]$Y_hat_0
             W.cinemaotw <- res.cinemaotw[[2]]$W
             res.cinemaotw <- res.cinemaotw[[1]]
-
-
 
             # Save confounder estimation results
             write.csv(cf.cocoa, sprintf('%scocoa_cf_%d.csv', path_result, seed))        
@@ -116,7 +114,15 @@ for(n in c(100,500,1000,5000)){
             write.csv(res.cinemaot, sprintf('%scinemaot_%d.csv', path_result, seed))
             write.csv(res.cinemaotw, sprintf('%scinemaotw_%d.csv', path_result, seed))
 
+            res.mixscape <- run_mixscape(Y, A, raw=TRUE)
+            cf.mixscape <- res.mixscape[[2]]$Y_hat_0
+            W.mixscape <- res.mixscape[[2]]$W
+            res.mixscape <- res.mixscape[[1]]
 
+            write.csv(cf.mixscape, sprintf('%smixscape_cf_%d.csv', path_result, seed))
+            write.csv(W.mixscape, sprintf('%smixscape_W_%d.csv', path_result, seed))
+            write.csv(res.mixscape, sprintf('%smixscape_%d.csv', path_result, seed))
+            
             for(r_hat in c(2,4,6)){
                 # RUV
                 ruv <- run_ruv(Y, metadata=scaleW, r_hat)
@@ -136,34 +142,33 @@ for(n in c(100,500,1000,5000)){
                     write.csv(cf.ruv3nb, sprintf('%sruv3nb_r_%d_cf_%d.csv', path_result, r_hat, seed))
                     write.csv(W.ruv3nb, sprintf('%sruv3nb_r_%d_W_%d.csv', path_result, r_hat, seed))
                     write.csv(res.ruv3nb, sprintf('%sruv3nb_r_%d_%d.csv', path_result, r_hat, seed))
-                }                
+                }
 
-                # causarray
+                # # causarray
                 # res.causarray.r <- estimate_r_causarray(Y, scaleW[,-ncol(scaleW)], A, 5)
                 # r_hat <- res.causarray.r[which.min(res.causarray.r$JIC), 'r']
                 # cat('r_hat:', r_hat, '\n')
                 # r_hat <- num_r
                 # res.causarray <- run_causarray(Y, scaleW[,-ncol(scaleW)], A, 
-                #     alpha=alpha, c=c, r=r_hat, #B=2000,
-                #     # Y_hat_0=res[[1]], Y_hat_1=res[[2]],
-                #     # ps_model='logistic', penalty=NULL,
-                #     # max_depth=as.integer(5), func='LFC'
+                #     alpha=alpha, c=c, r=r_hat
                 #     )[[1]]
 
                 res.causarray <- run_causarray(Y, scaleW[,-ncol(scaleW)], A, 
-                    fdx=T, r=r_hat, glm_alpha=.5, shrinkage=T, usevar = 'unequal')
-                cf.causarray <- log1p(res.causarray[[2]]$Y_hat_0)
+                    fdx=T, r=r_hat, glm_alpha=0.5, shrinkage=T, usevar = 'unequal'
+                    )
+                
+                cf.causarray <- log1p(res.causarray[[2]]$Y_hat[,,1,1])
                 W.causarray <- res.causarray[[2]]$W
                 res.causarray <- res.causarray[[1]]
-
+                cat(sum(res.causarray$padj<0.1))
+                
                 # Save confounder estimation results
                 write.csv(cf.ruv, sprintf('%sruv_r_%d_cf_%d.csv', path_result, r_hat, seed))
                 write.csv(W.ruv, sprintf('%sruv_r_%d_W_%d.csv', path_result, r_hat, seed))
-                
+                write.csv(res.ruv, sprintf('%sruv_r_%d_%d.csv', path_result, r_hat, seed))
+
                 write.csv(cf.causarray, sprintf('%scausarray_r_%d_cf_%d.csv', path_result, r_hat, seed))
                 write.csv(W.causarray, sprintf('%scausarray_r_%d_W_%d.csv', path_result, r_hat, seed))
-
-                write.csv(res.ruv, sprintf('%sruv_r_%d_%d.csv', path_result, r_hat, seed))                
                 write.csv(res.causarray, sprintf('%scausarray_r_%d_%d.csv', path_result, r_hat, seed))
             }
 
@@ -172,3 +177,5 @@ for(n in c(100,500,1000,5000)){
         )
     }
 }
+
+print('Done')
