@@ -25,7 +25,7 @@ def comp_stat(true, pred, c):
 
 
 def comp_score(Y, CF, celltype, Z, W_hat=None):
-    adata = sc.AnnData(CF)
+    adata = sc.AnnData(CF.astype('float'))
     # adata.obs['covariate'] = W[:,-1]
     # adata.obs['trt'] = A
     
