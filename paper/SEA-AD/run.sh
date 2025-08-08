@@ -1,13 +1,10 @@
-python 1-prepare_data.py > out.txt 2>&1
-mv out.txt data/out-py.txt
-
 for dataset in "PFC" "MTG"
 do
     ## Preprocessing
     Rscript --no-save --no-restore --verbose 1-preprocess.R ${dataset} > out-${dataset}.txt 2>&1 
     mv out-${dataset}.txt data/out-${dataset}.txt
     
-    for ps_model in "logistic" "random_forest_cv"
+    for ps_model in "random_forest_cv"
     do
         ## DE test
         Rscript --no-save --no-restore --verbose 2-DE.R ${ps_model} ${dataset} > out-${dataset}.txt 2>&1 

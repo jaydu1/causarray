@@ -145,9 +145,6 @@ df.deseq$ensembl_gene_id <- mapped_gene_names_to_ensembls(df.deseq$gene_names, m
 write.csv(df.deseq, paste0(path_rs, 'res.', celltype_filestr, '.deseq.csv'))
 
 
-
-
-
 # RUV+DESeq ----
 ruv_r <- ruv::getK(as.matrix(t(pb)), as.matrix(as.numeric(covs$trt)-1), Z=covs.mx)
 r <- min(ruv_r$k, 10)
@@ -162,16 +159,16 @@ write.csv(df.ruv, paste0(path_rs, 'res.', celltype_filestr, '.ruv.csv'))
 
 
 # causarray ----
-
-# Select the number of unmeasured confounders
-# res.causarray.r <- estimate_r_causarray(t(pb), covs.mx, as.matrix(as.numeric(covs$trt)-1), seq(5,80,5))
+# # Select the number of unmeasured confounders
+# res.causarray.r <- estimate_r_causarray(t(pb), covs.mx, as.matrix(as.numeric(covs$trt)-1), seq(5,50,5))
 # write.csv(res.causarray.r, paste0(path_rs, 'res.causarray.', celltype_filestr, '.r.csv'))
-# fig <- causarray$plot_r(res.causarray.r[res.causarray.r$r<=100,])
-# fig$savefig(paste0('res.causarray.', celltype_filestr, '.r.pdf'), dpi=300)
+# fig <- causarray$plot_r(res.causarray.r)
+# fig$savefig(paste0(dataset, '-res.causarray.', celltype_filestr, '.r.pdf'), dpi=300)
+
 
 r <- 10
 res.causarray <- run_causarray(t(pb), covs.mx, as.matrix(as.numeric(covs$trt)-1), r=r, verbose=TRUE,
-    # glm_alpha=.1, shrinkage=T, 
+    kwargs_regr = list(ccp_alpha=ifelse(dataset=='PFC', 0.07, 0.06)),
     ps_model=ps_model, fdx=TRUE,
 )
 
