@@ -1,9 +1,12 @@
 import numpy as np
 from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+from sklearn_ensemble_cv import reset_random_seeds, Ensemble, ECV
 from causarray.gcate_glm import fit_glm
 from causarray.utils import *
 from causarray.utils import _filter_params
+from joblib import Parallel, delayed
+from tqdm import tqdm
 import pprint
 
 from sklearn.model_selection import KFold, ShuffleSplit
@@ -82,10 +85,15 @@ def cross_fitting(
         pprint.pprint(params_ps)
         pprint.pprint(params_glm)
     
-    if K>1:
-        # Initialize KFold cross-validator
-        kf = KFold(n_splits=K, random_state=0, shuffle=True)
-        folds = kf.split(X)
+    if K > 1:
+        n_samples = X.shape[0]
+        if K >= n_samples:
+            # Use Leave-One-Out Cross-Validation
+            folds = [([i for i in range(n_samples) if i != j], [j]) for j in range(n_samples)]
+        else:
+            # Initialize KFold cross-validator
+            kf = KFold(n_splits=int(K), random_state=0, shuffle=True)
+            folds = kf.split(X)
     else:
         folds = [(np.arange(X.shape[0]), np.arange(X.shape[0]))]
 
@@ -94,6 +102,16 @@ def cross_fitting(
     pi_hat = np.zeros_like(A, dtype=float) if fit_pi else pi_hat
     fit_Y = True if Y_hat is None else False
     Y_hat = np.zeros((Y.shape[0],Y.shape[1],A.shape[1],2), dtype=float) if fit_Y else Y_hat
+
+    # perform ECV at once
+    if fit_pi and ps_model == 'random_forest_cv':
+        info_ecv = run_ecv(X_A, A, **params_ps)
+        func_ps, params_ps = _get_func_ps(ps_model, verbose=False, ecv=False, 
+                kwargs_ensemble=info_ecv['best_params_ensemble'], kwargs_regr=info_ecv['best_params_regr'])
+        pprint.pprint('Best parameters for the regression model:')
+        pprint.pprint(info_ecv['best_params_regr'])
+        pprint.pprint('Best parameters for the ensemble model:')
+        pprint.pprint(info_ecv['best_params_ensemble'])
 
     # Perform cross-fitting
     for train_index, test_index in folds:
@@ -178,7 +196,6 @@ def AIPW_mean(Y, A, mu, pi, positive=False):
     tau = np.mean(pseudo_y, axis=0)
 
     return tau, pseudo_y
-    
 
 
 
@@ -187,52 +204,89 @@ def AIPW_mean(Y, A, mu, pi, positive=False):
 
 
 
-
-from joblib import Parallel, delayed
-from tqdm import tqdm
-from sklearn_ensemble_cv import reset_random_seeds, Ensemble, ECV
-from sklearn.tree import DecisionTreeRegressor
-
-def fit_rf(X, y, X_test=None, sample_weight=None, M=100, M_max=1000,
+def run_ecv(
+    X, y, M=200, M_max=1000,
     # fixed parameters for bagging regressor
-    kwargs_ensemble={'verbose':1},
+    kwargs_ensemble={},
     # fixed parameters for decision tree
-    kwargs_regr={'min_samples_leaf': 3}, # 'min_samples_split': 10, 'max_features':'sqrt'
+    kwargs_regr={},
     # grid search parameters
-    grid_regr = {'max_depth': [11]},
-    grid_ensemble = {'random_state': 0}, #'max_samples':np.linspace(0.25, 1., 4)
-    ):
+    grid_regr={},
+    grid_ensemble={}
+):
+    """
+    Runs Ensemble Cross-Validation (ECV) to find the best hyperparameters.
+    """
+    kwargs_ensemble = {**{'verbose': 1, 'bootstrap': True}, **kwargs_ensemble}
+    kwargs_regr = {**{'min_samples_split': 20, 'min_samples_leaf': 10, 'max_features': 'sqrt', 'ccp_alpha': 0.02, 'class_weight': 'balanced'}, **kwargs_regr}
+    grid_regr = {**{'max_depth': [3, 5, 7]}, **grid_regr}
+    grid_ensemble = {**{'random_state': 0, 'max_samples': [0.4, 0.6, 0.8, 1.]}, **grid_ensemble}
 
     # Validate integer parameters
     M = int(M)
     M_max = int(M_max)
-    # for kwargs in [kwargs_regr, kwargs_ensemble, grid_regr, grid_ensemble]:
-    #     for param in kwargs:
-    #         if param in ['max_depth', 'random_state', 'max_leaf_nodes'] and isinstance(kwargs[param], float):
-    #             kwargs[param] = int(kwargs[param])
 
     # Make sure y is 2D
     y = y.reshape(-1, 1) if y.ndim == 1 else y
 
     # Run ECV
-    res_ecv, info_ecv = ECV(
-        X, y, DecisionTreeRegressor, grid_regr, grid_ensemble, 
-        kwargs_regr, kwargs_ensemble, 
+    _, info_ecv = ECV(
+        X, y, DecisionTreeClassifier, grid_regr, grid_ensemble,
+        kwargs_regr, kwargs_ensemble,
         M=M, M0=M, M_max=M_max, return_df=True
     )
 
     # Replace the in-sample best parameter for 'n_estimators' with extrapolated best parameter
     info_ecv['best_params_ensemble']['n_estimators'] = info_ecv['best_n_estimators_extrapolate']
 
+    return info_ecv
+
+
+def fit_rf(
+    X, y, X_test=None, M=100, M_max=1000, ecv=True,
+    # fixed parameters for bagging regressor
+    kwargs_ensemble={},
+    # fixed parameters for decision tree
+    kwargs_regr={},
+    # grid search parameters
+    grid_regr={},
+    grid_ensemble={}
+):
+    """
+    Fits a Random Forest model using parameters found by ECV.
+    """
+
+    kwargs_ensemble = {**{'verbose': 1, 'bootstrap': True}, **kwargs_ensemble}
+    kwargs_regr = {**{'min_samples_split': 20, 'min_samples_leaf': 10, 'max_features': 'sqrt', 'ccp_alpha': 0.02, 'class_weight': 'balanced'}, **kwargs_regr}
+    grid_regr = {**{'max_depth': [3, 5, 7]}, **grid_regr}
+    grid_ensemble = {**{'random_state': 0, 'max_samples': [0.4, 0.6, 0.8, 1.]}, **grid_ensemble}
+
+    # Make sure y is 2D
+    y_2d = y.reshape(-1, 1) if y.ndim == 1 else y
+
+    if ecv:
+        # Get best parameters from ECV
+        info_ecv = run_ecv(
+            X, y_2d, M=M, M_max=M_max,
+            kwargs_ensemble=kwargs_ensemble,
+            kwargs_regr=kwargs_regr,
+            grid_regr=grid_regr,
+            grid_ensemble=grid_ensemble
+        )
+        params_regr = info_ecv['best_params_regr']
+        params_ensemble = info_ecv['best_params_ensemble']
+    else:
+        params_regr = kwargs_regr
+        params_ensemble = kwargs_ensemble
+        
     # Fit the ensemble with the best CV parameters
     regr = Ensemble(
-        estimator=DecisionTreeRegressor(**info_ecv['best_params_regr']),
-        **info_ecv['best_params_ensemble']).fit(X, y, sample_weight=sample_weight)
-        
+        estimator=DecisionTreeClassifier(**params_regr), **params_ensemble).fit(X, y_2d)
+
     # Predict
     if X_test is None:
         X_test = X
-    return regr.predict(X_test).reshape(-1, y.shape[1])
+    return regr.predict(X_test).reshape(-1, y_2d.shape[1])
 
 
 
@@ -252,11 +306,7 @@ def fit_rf_ind_ps(X, Y, *args, **kwargs):
     def _fit(X, y, i_ctrl, *args, **kwargs):        
         i_case = (y == 1.)
         i_cells = i_ctrl | i_case
-        sample_weight = np.ones(y.shape[0])
-        class_weight =  len(y) / (2 * np.bincount(y.astype(int)))  
-        for a in range(2):
-            sample_weight[y == a] = class_weight[a]     
-        return fit_rf(X[i_cells], y[i_cells], sample_weight=sample_weight[i_cells], *args, **kwargs)
+        return fit_rf(X[i_cells], y[i_cells], *args, **kwargs)
 
     Y_hat = Parallel(n_jobs=-1)(delayed(_fit)(X, Y[:,j], i_ctrl, *args, **kwargs)
         for j in tqdm(range(Y.shape[1])))
