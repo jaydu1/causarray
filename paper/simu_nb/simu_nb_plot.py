@@ -31,7 +31,7 @@ if len(sys.argv)>1:
 else:
     ind = ''
 r_list = [2,4,6]
-method_list = ['wilc', 'DESeq', 'cocoa', 'cinemaot', 'cinemaotw'] \
+method_list = ['wilc', 'DESeq', 'cocoa', 'cinemaot', 'cinemaotw', 'mixscape'] \
     + ['ruv_r_{}'.format(r) for r in r_list] \
     + ['ruv3nb_r_{}'.format(r) for r in r_list] \
     + ['causarray_r_{}'.format(r) for r in r_list]
@@ -83,6 +83,27 @@ for n in n_list:
 df_res.reset_index(drop=True, inplace=True)
 df_res.to_csv(path_base+'results/result{}_test.csv'.format(ind))
 
+
+sns.set(font_scale=1.2)
+fig, axes = plt.subplots(1,2, figsize=(10,4), sharex=True, sharey=False)
+for j, metric in enumerate(['FDR', 'power']):
+    sns.boxplot(data=df_res, x='n', y=metric, hue='method', ax=axes[j])
+
+axes[0].axhline(alpha, color='r', linestyle='--')
+lines_labels = [ax.get_legend_handles_labels() for ax in [axes[1]]]
+handles, labels = [sum(lol, []) for lol in zip(*lines_labels)]
+
+axes[0].get_legend().remove()
+axes[1].get_legend().remove()
+legend = fig.legend(handles=handles, labels=labels,
+                    loc=9, ncol=5, title=None, frameon=False)
+legend_title_left(legend)
+
+fig.tight_layout()
+fig.subplots_adjust(top=0.85)
+
+plt.savefig(path_base+'results/simu{}_res.pdf'.format(ind), bbox_inches='tight', pad_inches=0, dpi=300)
+
 print(df_res.groupby(['n','method'])[['typeI_err', 'FDR', 'power', 'FDX', 'num_dis']].median())
 
 
@@ -93,7 +114,7 @@ print(df_res.groupby(['n','method'])[['typeI_err', 'FDR', 'power', 'FDX', 'num_d
 
 
 r_list = [2,4,6]
-method_list = ['cocoa', 'cinemaot', 'cinemaotw']  \
+method_list = ['cocoa', 'cinemaot', 'cinemaotw', 'mixscape']  \
     + ['ruv_r_{}'.format(r) for r in r_list] \
     + ['ruv3nb_r_{}'.format(r) for r in r_list] \
     + ['causarray_r_{}'.format(r) for r in r_list]
@@ -147,3 +168,66 @@ for n in n_list:
 
 df_res.reset_index(drop=True, inplace=True)
 df_res.to_csv(path_base+'results/result{}_deconfound.csv'.format(ind))
+
+
+
+
+
+df_test = pd.read_csv(path_base+'results/result{}_test.csv'.format(ind)).rename({'FDR':'FPR', 'power':'TPR'}, axis=1)
+df_cf = pd.read_csv(path_base+'results/result{}_deconfound.csv'.format(ind))
+
+r_list = [2,4,6]
+method_name = {
+    'wilc':'Wilcoxon', 'DESeq':'DESeq2', 'cocoa':'CoCoA', 'cinemaot':'CINEMA-OT', 'cinemaotw':'CINEMA-OT-W', 'mixscape':'Mixscape',
+    }
+    
+method_name = reduce(lambda a, b: dict(a, **b), 
+    [{'ruv_r_{}'.format(r):'RUV $r={}$'.format(r) for r in r_list}, 
+      {'ruv3nb_r_{}'.format(r):'RUV-III-NB $r={}$'.format(r) for r in r_list}, 
+      {'causarray_r_{}'.format(r):'causarray $r={}$'.format(r) for r in r_list}
+    ])
+
+df_test = df_test[df_test['method'].isin(method_name.keys())]
+df_cf = df_cf[df_cf['method'].isin(method_name.keys())]
+df_test['method'] = df_test['method'].map(method_name)
+df_cf['method'] = df_cf['method'].map(method_name)
+
+df_test = df_test[df_test['n'].isin(n_list)]
+df_cf = df_cf[df_cf['n'].isin(n_list)]
+
+method_list = method_name.values()#df_test['method'].unique()
+# palette = sns.color_palette()[:len(method_list)]
+palette = reduce(lambda l1, l2: l1+l2, [sns.color_palette(name)[:len(r_list)*2:2] for name in ['Reds', 'Greens', 'Blues']])
+hue_order = {i:c for i,c in zip(method_list, palette) }
+
+sns.set(font_scale=1.3)
+fig, axes = plt.subplots(1,4, figsize=(16,5), sharex=False, sharey=False)
+for j, metric in enumerate(['FPR', 'TPR']):
+    sns.boxplot(data=df_test, x='n', y=metric, hue='method', hue_order=hue_order,
+        ax=axes[j+2], palette=palette, showfliers=False)
+
+for j, metric in enumerate(['ARI', 'ASW']):
+    sns.boxplot(data=df_cf, x='n', y=metric, hue='method', hue_order=hue_order,
+        ax=axes[j], palette=palette, showfliers=False)
+
+axes[2].axhline(0.1, color='r', linestyle='--')
+lines_labels = [ax.get_legend_handles_labels() for ax in [axes[1]]]
+handles, labels = [sum(lol, []) for lol in zip(*lines_labels)]
+handles = [mlines.Line2D([], [], linestyle='None')] * 3 + handles[::3] + handles[1::3] + handles[2::3]
+labels = ['RUV', 'RUV-III-NB', 'causarray',
+            '$r=2$', '$r=2$', '$r=2$',
+            '$r=4$', '$r=4$', '$r=4$',
+            '$r=6$', '$r=6$', '$r=6$']
+
+for j in range(4):
+    axes[j].get_legend().remove()
+    axes[j].tick_params(axis='both', which='major', labelsize=10)
+    axes[j].set_xlabel('Sample size $n$')
+legend = fig.legend(handles=handles, labels=labels,
+                    loc=9, ncol=4, title=None, frameon=False)           
+legend_title_left(legend)
+
+fig.tight_layout()
+fig.subplots_adjust(top=0.78)
+
+plt.savefig(path_base + 'results/simu_nb_r{}.pdf'.format(ind), bbox_inches='tight', pad_inches=0, dpi=300)

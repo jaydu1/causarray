@@ -1,4 +1,6 @@
 library(rhdf5)
+
+
 # Load Python and R functions for basic Wilcoxon Tests, DESeq2, and CocoA-Diff
 # and causarray, cinemaot
 require(reticulate)
@@ -15,8 +17,8 @@ n <- 200
 c = 0.1
 alpha = 0.1
 
-ind <- '_d_1_r_4_noise_0.1'
-num_r <- 1
+ind <- '_d_1_r_4_noise_0.2'
+num_r <- 1; d <- 1
 
 args = commandArgs(trailingOnly=TRUE)
 if(length(args)==0){
@@ -38,17 +40,15 @@ if((ind != '') && grepl( 'r', ind, fixed = TRUE)){
 }
 
 
-
+seeds <- as.integer(args[2])
 for(n in c(100, 500, 1000, 5000)){
     path_result <- sprintf(paste0(path_base,'results/simu_%d%s/'), n, ind)
     dir.create(path_result, recursive=TRUE, showWarnings = FALSE)
 
-    for (seed in 0:49) {
+    for (seed in c(seeds)) {
         path_data <- sprintf(paste0(path_base,'data/simu_%d%s/simu_data_%d.h5'), n, ind, seed)
 
-        if(file.exists(sprintf('%scausarray_r_%d_%d.csv', path_result, 6, seed))){
-            next
-        }
+        cat(n, seed, '...\n')
 
         Y <- t(h5read(path_data, '/Y'))
         metadata <- t(h5read(path_data, '/metadata'))
@@ -72,12 +72,13 @@ for(n in c(100, 500, 1000, 5000)){
         possibleError <- tryCatch(
             {
         # Wilcoxon Tests ----
-        res.wilc <- run_wilcoxon(Y, metadata=scaleW, raw=T)
+        res.wilc <- run_wilcoxon(Y, metadata=scaleW)
 
         # DESeq ----
         res.DESeq <- run_DESeq(Y, metadata=scaleW, return_ds=TRUE)
         dds <- res.DESeq[[2]]
         res.DESeq <- res.DESeq[[1]]
+        # causarray$comp_stat(theta, res.DESeq$padj<0.1, 0.1)
 
         # CocoA-Diff ----
         cocoa <- run_cocoa(sc = Y, indvs=metadata[,2], metadata=scaleW, cocoAWriteName=sprintf('%stmp_cocoa/tmp_%d', path_result, seed))
@@ -97,6 +98,7 @@ for(n in c(100, 500, 1000, 5000)){
         W.cinemaotw <- res.cinemaotw[[2]]$W
         res.cinemaotw <- res.cinemaotw[[1]]
 
+
         # Save confounder estimation results
         write.csv(cf.cocoa, sprintf('%scocoa_cf_%d.csv', path_result, seed))        
         write.csv(cf.cinemaot, sprintf('%scinemaot_cf_%d.csv', path_result, seed))
@@ -104,12 +106,25 @@ for(n in c(100, 500, 1000, 5000)){
         write.csv(cf.cinemaotw, sprintf('%scinemaotw_cf_%d.csv', path_result, seed))
         write.csv(W.cinemaotw, sprintf('%scinemaotw_W_%d.csv', path_result, seed))
 
+        
         # Save test results
         write.csv(res.wilc, sprintf('%swilc_%d.csv', path_result, seed))
         write.csv(res.DESeq, sprintf('%sDESeq_%d.csv', path_result, seed))
         write.csv(res.cocoa, sprintf('%scocoa_%d.csv', path_result, seed))
         write.csv(res.cinemaot, sprintf('%scinemaot_%d.csv', path_result, seed))
         write.csv(res.cinemaotw, sprintf('%scinemaotw_%d.csv', path_result, seed))
+
+
+        # mixscape ----
+        res.mixscape <- run_mixscape(Y, A, raw=TRUE)
+        cf.mixscape <- res.mixscape[[2]]$Y_hat_0
+        W.mixscape <- res.mixscape[[2]]$W
+        res.mixscape <- res.mixscape[[1]]
+
+        write.csv(cf.mixscape, sprintf('%smixscape_cf_%d.csv', path_result, seed))
+        write.csv(W.mixscape, sprintf('%smixscape_W_%d.csv', path_result, seed))
+        write.csv(res.mixscape, sprintf('%smixscape_%d.csv', path_result, seed))
+
 
         for(r_hat in c(2,4,6)){
             # RUV
@@ -140,7 +155,7 @@ for(n in c(100, 500, 1000, 5000)){
 
             res.causarray <- run_causarray(Y, scaleW[,-ncol(scaleW)], A, 
                 fdx=T, r=r_hat, glm_alpha=.5, shrinkage=T)
-            cf.causarray <- log1p(res.causarray[[2]]$Y_hat_0)
+            cf.causarray <- log1p(res.causarray[[2]]$Y_hat[,,1,1])
             W.causarray <- res.causarray[[2]]$W
             res.causarray <- res.causarray[[1]]
 
