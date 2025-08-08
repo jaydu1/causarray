@@ -89,15 +89,21 @@ covs.mx <- matrix(as.numeric(unlist(covs.mx)),nrow=nrow(covs))
 
 # Gene names to ensembl ----
 gene_names <- toupper(colnames(t(pb)))
-hsmart <- useMart(dataset = "hsapiens_gene_ensembl", biomart = "ensembl", host='https://useast.ensembl.org')
+if (file.exists(paste0(path_base, 'data/gene_symbol_to_ensembl_mapping.rds'))) {
+  mapping <- readRDS(paste0(path_base, 'data/gene_symbol_to_ensembl_mapping.rds'))
+}else{
+  hsmart <- useMart(dataset = "hsapiens_gene_ensembl", biomart = "ensembl", host='https://useast.ensembl.org')
 
-gene_ensembls <- getBM(attributes = c('ensembl_gene_id', 'hgnc_symbol'), 
-  filters = 'hgnc_symbol',
-  values = gene_names,
-  mart = hsmart)
+  gene_ensembls <- getBM(attributes = c('ensembl_gene_id', 'hgnc_symbol'), 
+    filters = 'hgnc_symbol',
+    values = gene_names,
+    mart = hsmart)
 
-# Create a named vector for mapping
-mapping <- setNames(gene_ensembls$ensembl_gene_id, gene_ensembls$hgnc_symbol)
+  # Create a named vector for mapping
+  mapping <- setNames(gene_ensembls$ensembl_gene_id, gene_ensembls$hgnc_symbol)
+  # Save mapping for later use
+  saveRDS(mapping, file = paste0(path_base, 'data/gene_symbol_to_ensembl_mapping.rds'))
+}
 
 # Map gene_names to gene_ensembls, using an empty string for unmapped genes
 mapped_gene_names_to_ensembls <- function(gene_names, mapping) {
@@ -109,7 +115,6 @@ mapped_gene_names_to_ensembls <- function(gene_names, mapping) {
   }
 })
 }
-
 
 
 #'#######################################################################
@@ -140,10 +145,10 @@ write.csv(df.ruv, paste0(path_rs, 'res.', celltype_filestr, '.ruv.csv'))
 
 # causarray ----
 # Select the number of unmeasured confounders
-res.causarray.r <- estimate_r_causarray(t(pb), covs.mx, as.matrix(as.numeric(covs$trt)-1), seq(5,100,5))
-write.csv(res.causarray.r, paste0(path_rs, 'res.causarray.', celltype_filestr, '.r.csv'))
-fig <- causarray$plot_r(res.causarray.r[res.causarray.r$r<=100,])
-fig$savefig(paste0('res.causarray.', celltype_filestr, '.r.pdf'), dpi=300)
+# res.causarray.r <- estimate_r_causarray(t(pb), covs.mx, as.matrix(as.numeric(covs$trt)-1), seq(5,50,5))
+# write.csv(res.causarray.r, paste0(path_rs, 'res.causarray.', celltype_filestr, '.r.csv'))
+# fig <- causarray$plot_r(res.causarray.r)
+# fig$savefig(paste0('res.causarray.', celltype_filestr, '.r.pdf'), dpi=300)
 
 
 r <- 10
@@ -158,8 +163,6 @@ sum(df.causarray$padj_emp_null_adj < 0.1, na.rm=T)
 
 df.causarray$ensembl_gene_id <- mapped_gene_names_to_ensembls(df.causarray$gene_names, mapping)
 write.csv(df.causarray, paste0(path_rs, 'res.', celltype_filestr, '.causarray.csv'))
-
-
 
 
 

@@ -27,6 +27,8 @@ Y = pd.read_csv(path+"Y.csv", index_col=0).values
 W = pd.read_csv(path+"Wp.csv", index_col=0).values
 W_raw = pd.read_csv(path+"W.raw.csv", index_col=0).values
 A = pd.read_csv(path+"A.csv", index_col=0).values
+if len(A.shape) == 1:
+    A = A.reshape(-1,1)
 gene_names = pd.read_csv(path+"Y.csv", index_col=0).columns
 
 # Normalize the log library sizes
@@ -42,52 +44,28 @@ df['gene_names'] = gene_names
 print(np.sum(df['padj']<0.1))
 
 # Extract results from the LFC analysis
-pi = res['pi']
-Y_hat_0 = res['Y_hat_0']
-Y_hat_1 = res['Y_hat_1']
+pi = res['pi_hat']
+Y_hat = res['Y_hat']
 size_factors = res['size_factors']
 
 # Get the number of samples and genes
 n, p = Y.shape
 
+# Point estimation of the treatment effect
+tau, eta = AIPW_mean(np.log1p(Y / size_factors[:,None]), np.stack([1-A, A], axis=-1), 
+        np.log1p(Y_hat/size_factors[:,None,None,None]), np.stack([1-pi, pi], axis=-1), positive=True)
+tau_0, eta_0 = tau[...,0], eta[...,0]
+tau_1, eta_1 = tau[...,1], eta[...,1]
 
-_, eta_0 = AIPW_mean(Y.astype('float'), 1-A, np.clip(Y_hat_0, None, 1e5), 1-pi, pseudo_outcome=True, positive=True)
-_, eta_1 = AIPW_mean(Y.astype('float'), A, np.clip(Y_hat_1, None, 1e5), pi, pseudo_outcome=True, positive=True)
-eta_0 = eta_0[:,:,0]/size_factors[:,None]
-eta_1 = eta_1[:,:,0]/size_factors[:,None]
-thres_diff = 1e-6
-
-tau_0, tau_1 = np.mean(eta_0, axis=0), np.mean(eta_1, axis=0)
-tau_1 = np.clip(tau_1, thres_diff, None)
-tau_0 = np.clip(tau_0, thres_diff, None)
-
-tau_estimate = np.log(tau_1/tau_0)
-eta = eta_1 / tau_1[None,:] -  eta_0 / tau_0[None,:]
-theta_var = np.var(eta, axis=0, ddof=1)
-
-# filter out low-expressed genes
-idx = ~ ((np.maximum(tau_0,tau_1)<1e-4) & ((tau_1-tau_0)<1e-6))
-tau_estimate[~idx] = 0.; eta[:,~idx] = 0.; theta_var[~idx] = np.inf
-
-
-sqrt_theta_var = np.sqrt((theta_var + 1e-3)/ n)
-tvalues_init = tau_estimate / sqrt_theta_var
-phi = eta + tau_estimate[None,:]
-
-
-# # Point estimation of the treatment effect
-# tau_0, eta_0 = AIPW_mean(np.log1p(Y / size_factors[:,None]), 1-A, np.log1p(Y_hat_0 / size_factors[:,None,None]), 1-pi, pseudo_outcome=True, positive=True)
-# tau_1, eta_1 = AIPW_mean(np.log1p(Y / size_factors[:,None]), A, np.log1p(Y_hat_1 / size_factors[:,None,None]), pi, pseudo_outcome=True, positive=True)
-
-# # Calculate the treatment effect estimates
-# tau_estimate = (tau_1 - tau_0)[:,0]
-# eta = (eta_1 - eta_0)[:,:,0] - tau_estimate[None, :]
-# phi = (eta_1 - eta_0)[:,:,0]
+# Calculate the treatment effect estimates
+tau_estimate = (tau_1 - tau_0)[:,0]
+eta = (eta_1 - eta_0)[:,:,0] - tau_estimate[None, :]
+phi = (eta_1 - eta_0)[:,:,0]
 
 # Calculate t-values, p-values, and q-values
-# tvalues_init = np.sqrt(n) * (tau_estimate) / np.sqrt(np.var(eta, axis=0, ddof=1))
-# pvals = sp.stats.norm.sf(np.abs(tvalues_init)) * 2
-# qvals = multipletests(pvals, alpha=0.05, method='fdr_bh')[1]
+tvalues_init = np.sqrt(n) * (tau_estimate) / np.sqrt(np.var(eta, axis=0, ddof=1))
+pvals = sp.stats.norm.sf(np.abs(tvalues_init)) * 2
+qvals = multipletests(pvals, alpha=0.05, method='fdr_bh')[1]
 
 # Define the number of covariates to exclude
 r = 10
@@ -110,9 +88,9 @@ objects_to_save = {
     'phi': phi,
     'eta_1': eta_1,
     'eta_0': eta_0,
-    # 'tvalues_init': tvalues_init,
-    # 'pvals': pvals,
-    # 'qvals': qvals,
+    'tvalues_init': tvalues_init,
+    'pvals': pvals,
+    'qvals': qvals,
     'res_vim': res_vim
 }
 
