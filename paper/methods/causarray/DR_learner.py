@@ -244,7 +244,7 @@ def LFC(
             var_1 = np.var(eta_est[A==1], axis=0, ddof=1)
             n_0 = np.sum(A==0)
             n_1 = np.sum(A==1)
-            var_est = (var_0 + eps_var) / n_0 + (var_1 + eps_var) / n_1
+            var_est = ((var_0 + eps_var) / n_0 + (var_1 + eps_var) / n_1) / 2
         else:
             raise ValueError('usevar must be either "pooled" or "unequal"')
 
