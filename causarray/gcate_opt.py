@@ -261,7 +261,7 @@ def alter_min(
     kwargs_ls['alpha'] = kwargs_ls['alpha']
     if verbose:
         pprint.pprint({'kwargs_glm':kwargs_glm,'kwargs_ls':kwargs_ls,'kwargs_es':kwargs_es}, compact=True)
-    pprint.pprint(f'Fitting GCATE (step {1 if P1 is None else 2})...')
+    pprint.pprint(f'Fitting GCATE (step {2 if P1 is None else 1})...')
     hist = [func_val_pre]
     es = Early_Stopping(**kwargs_es)
     with tqdm(np.arange(kwargs_es['max_iters']), disable=not verbose) as pbar:

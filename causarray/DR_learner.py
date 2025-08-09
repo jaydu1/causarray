@@ -74,7 +74,8 @@ def compute_causal_estimand(
     Y = Y.astype('float')
     n, p = Y.shape
 
-    if A.ndim == 1: A = A[:, None]
+    if len(A.shape) == 1:
+        A = A.reshape(-1,1)
     if isinstance(A, pd.DataFrame):
         trt_names = A.columns
         A = A.values
@@ -169,7 +170,7 @@ def compute_causal_estimand(
 def LFC(
     Y, W, A, W_A=None, family='nb', offset=False,    
     Y_hat=None, pi_hat=None, cross_est=False,  mask=None, usevar='pooled',
-    thres_min=1e-4, thres_diff=1e-6, eps_var=1e-3,
+    thres_min=1e-2, thres_diff=1e-2, eps_var=1e-4,
     fdx=False, fdx_alpha=0.05, fdx_c=0.1,     
     verbose=False, **kwargs):
     '''
@@ -200,9 +201,6 @@ def LFC(
         Boolean mask of shape (n, a) for the treatment, indicating which samples are used for 
         the estimation of the estimand. This does not affect the estimation of pseudo-outcomes
         and propensity scores.
-    usevar : str
-        The method to use for estimating the variance of treatment effects. 
-        Options are 'pooled' (default) or 'unequal'.
     
     thres_min : float
         The minimum threshold for the treatment effect.
@@ -246,12 +244,12 @@ def LFC(
             var_1 = np.var(eta_est[A==1], axis=0, ddof=1)
             n_0 = np.sum(A==0)
             n_1 = np.sum(A==1)
-            var_est = (var_0 + eps_var) / n_0 + (var_1 + eps_var) / n_1
+            var_est = ((var_0 + eps_var) / n_0 + (var_1 + eps_var) / n_1) / 2
         else:
             raise ValueError('usevar must be either "pooled" or "unequal"')
 
         # filter out low-expressed genes
-        idx = (np.maximum(tau_0,tau_1)<thres_min) & ((tau_1-tau_0)<thres_diff)
+        idx = (np.maximum(np.abs(tau_0),np.abs(tau_1))<thres_min) | (np.abs(tau_1-tau_0)<thres_diff)
         tau_est[idx] = 0.; eta_est[:,idx] = 0.; var_est[idx] = np.inf
 
         return eta_est, tau_est, var_est
