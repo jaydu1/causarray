@@ -45,8 +45,8 @@ def run_cinemaot(Y, A, raw=False, weighted=False, thres=0.15, smoothness=1e-3, *
         sc.pp.scale(adata, max_value=10)
     sc.pp.pca(adata)
     
-    Y_hat_0 = np.zeros(Y.shape, dtype=float)
-    Y_hat_1 = np.zeros(Y.shape, dtype=float)
+    Y_hat_0 = Y.copy()
+    Y_hat_1 = Y.copy()
     de = np.zeros(Y.shape, dtype=float)
     for a in range(2):
         if weighted:
@@ -59,10 +59,10 @@ def run_cinemaot(Y, A, raw=False, weighted=False, thres=0.15, smoothness=1e-3, *
                 smoothness=smoothness, **kwargs)
 
         if a==0:
-            Y_hat_0[A==a] -= _de.X
+            Y_hat_1[A==a] = Y_hat_0[A==a] - _de.X
             cf = _cf
         else:
-            Y_hat_1[A==a] -= _de.X
+            Y_hat_0[A==a] = Y_hat_1[A==a] - _de.X
         de[A==a] = (2 * a - 1) * _de.X
 
     stat, pvalue = list(zip(*[wilcoxon(de[:,j],zero_method='zsplit') for j in range(de.shape[1])]))
@@ -104,8 +104,8 @@ def run_mixscape(Y, A, raw=False, nn=20, **kwargs):
     
     sc.pp.pca(adata)
 
-    Y_hat_0 = np.zeros_like(Y)
-    Y_hat_1 = np.zeros_like(Y)
+    Y_hat_0 = Y.copy()
+    Y_hat_1 = Y.copy()
     de = np.zeros_like(Y)
 
     # Calculate counterfactual for treated group (A=1)
@@ -115,7 +115,6 @@ def run_mixscape(Y, A, raw=False, nn=20, **kwargs):
     mixscape_matrix_trt = nbrs_ctrl.kneighbors_graph(X_pca_trt).toarray()
     
     Y_hat_0[A == 1] = (mixscape_matrix_trt / np.sum(mixscape_matrix_trt, axis=1, keepdims=True)) @ Y[A == 0]
-    Y_hat_0[A == 0] = Y[A == 0]
 
     # Calculate counterfactual for control group (A=0)
     X_pca_trt = adata.obsm['X_pca'][adata.obs['A'] == 1, :]
@@ -124,7 +123,6 @@ def run_mixscape(Y, A, raw=False, nn=20, **kwargs):
     mixscape_matrix_ctrl = nbrs_trt.kneighbors_graph(X_pca_ctrl).toarray()
 
     Y_hat_1[A == 0] = (mixscape_matrix_ctrl / np.sum(mixscape_matrix_ctrl, axis=1, keepdims=True)) @ Y[A == 1]
-    Y_hat_1[A == 1] = Y[A == 1]
 
     de[A == 1] = Y[A == 1] - Y_hat_0[A == 1]
     de[A == 0] = Y_hat_1[A == 0] - Y[A == 0]

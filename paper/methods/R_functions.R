@@ -27,7 +27,7 @@ causarray <- import("causarray")
 #' @param c Second of two parameters to control P(FDP > c) <= alpha.
 #' @returns Dataframe containing Wilcoxon statistic and p-value for each gene
 #'
-run_causarray <- function(Y, W, A, r, update_disp_glm=TRUE, W_A='full', ...){
+run_causarray <- function(Y, W, A, r, update_disp_glm=TRUE, W_A='full', nfold=1, ...){
     cat(causarray$'__version__','\n')
     
     data <- prep_causarray(Y, W, A, ...)
@@ -55,10 +55,10 @@ run_causarray <- function(Y, W, A, r, update_disp_glm=TRUE, W_A='full', ...){
     }
 
     W_new <- cbind(W, Wp[,-c(1:d)])
-    if(W_A=='full'){        
-        W_A <- cbind(W, Wp[,-c(1:d)], data[[5]])
-    }else if(is.null(W_A)){
+    if(is.null(W_A)){
         W_A <- W_new
+    }else if(W_A=='full'){
+        W_A <- cbind(W_new, data[[5]])
     }else{
         W_A <- matrix(1, nrow=nrow(Y), ncol=1)
     }
@@ -67,6 +67,13 @@ run_causarray <- function(Y, W, A, r, update_disp_glm=TRUE, W_A='full', ...){
       modifyList(list(fdx_alpha=0.1, fdx_c=0.1, family='nb', offset=offset, disp_glm=disp_glm), 
           list('Y'=Y, 'W'=W_new, 'A'=A, 'W_A'=W_A, ...))
       )
+    if(nfold>1){
+      res <- do.call(
+      causarray$LFC,
+      modifyList(list(fdx_alpha=0.1, fdx_c=0.1, family='nb', offset=offset, disp_glm=disp_glm), 
+          list('Y'=Y, 'W'=W_new, 'A'=A, 'W_A'=W_A, 'Y_hat'=res[[2]]$`Y_hat`, 'K'=nfold, ...))
+      )
+    }
     causarray.df <- res[[1]]
     
     causarray.df$gene_names <- rep(colnames(Y), ifelse(length(dim(A)) == 2, dim(A)[2], 1))
@@ -240,6 +247,8 @@ run_wilcoxon <- function(Y, metadata, family='nb') {
   
   return(wilc_df)
 }
+
+
 
 # DESeq ----
 #' Function that runs DESeq on single-cell data
