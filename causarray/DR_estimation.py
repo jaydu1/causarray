@@ -3,6 +3,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn_ensemble_cv import reset_random_seeds, Ensemble, ECV
 from causarray.gcate_glm import fit_glm
+import causarray.gcate_glm as _gcate_glm  # module-qualified so _USE_FAST_BACKEND changes take effect at call time
 from causarray.utils import *
 from causarray.utils import _filter_params
 from joblib import Parallel, delayed
@@ -146,7 +147,7 @@ def cross_fitting(
         if fit_Y:
             if verbose: pprint.pprint('Fit outcome models...')
             # Fit GLM on training data and predict on test data
-            res = fit_glm(Y_train, X_train, A_train, family=family, alpha=glm_alpha,
+            res = _gcate_glm.fit_glm_auto(Y_train, X_train, A_train, family=family, alpha=glm_alpha,
                 impute=X_test, **params_glm)
             Y_hat[test_index,:,:,0] = res[1][0]
             Y_hat[test_index,:,:,1] = res[1][1]

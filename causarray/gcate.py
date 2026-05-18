@@ -1,6 +1,8 @@
 from causarray.gcate_opt import *
+import contextlib
 import pandas as pd
 from causarray.utils import comp_size_factor, _filter_params
+import causarray.gcate_glm as _gcate_glm  # module-qualified so _USE_FAST_BACKEND changes take effect at call time
 
 
 def _check_input(Y, X, family, disp_glm, disp_family, offset, c1, **kwargs):
@@ -35,7 +37,7 @@ def _check_input(Y, X, family, disp_glm, disp_family, offset, c1, **kwargs):
     if kwargs_glm['family']=='nb':
         if disp_family is None:
             disp_family = 'poisson'
-        disp_glm = estimate_disp(Y, X, offset=offset, disp_family=disp_family, maxiter=1000, **kwargs)
+        disp_glm = _gcate_glm.estimate_disp_auto(Y, X, offset=offset, disp_family=disp_family, maxiter=1000, **kwargs)
     if disp_glm is not None:
         kwargs_glm['disp_glm'] = disp_glm
             
@@ -50,9 +52,10 @@ def _check_input(Y, X, family, disp_glm, disp_family, offset, c1, **kwargs):
 
 def fit_gcate(Y, X, A, r, family='nb', disp_glm=None, disp_family=None, offset=True,
     kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
-    c1=None, **kwargs
+    c1=None, backend: str = "auto", **kwargs
 ):
-    '''
+    '''Fit the GCATE model.
+
     Parameters
     ----------
     Y : array-like, shape (n, p)
@@ -64,7 +67,7 @@ def fit_gcate(Y, X, A, r, family='nb', disp_glm=None, disp_family=None, offset=T
     r : int
         The number of unmeasured confounders.
     family : str
-        The family of the GLM. Default is 'poisson'.
+        The family of the GLM. Default is \'poisson\'.
     disp_glm : array-like, shape (p, ) or None
         The dispersion parameter for the negative binomial distribution.
     offset : array-like, shape (p, ) or None
@@ -79,19 +82,24 @@ def fit_gcate(Y, X, A, r, family='nb', disp_glm=None, disp_family=None, offset=T
         Keyword arguments for the early stopper in the second phrase.
     c1 : float
         The regularization constant in the first phrase. Default is 0.1.
+    backend : str
+        GLM backend to use: ``"auto"`` (default), ``"fast"`` (force crispyx),
+        or ``"original"`` (force statsmodels).  Not thread-safe.
     kwargs : dict
         Additional keyword arguments.
     '''
 
     X = np.hstack((X, A))
     a = A.shape[1]
-    Y, kwargs_glm, lam1 = _check_input(Y, X, family, disp_glm, disp_family, offset, c1, **kwargs)    
+    ctx = _gcate_glm._backend_override(backend) if backend != "auto" else contextlib.nullcontext()
+    with ctx:
+        Y, kwargs_glm, lam1 = _check_input(Y, X, family, disp_glm, disp_family, offset, c1, **kwargs)
 
-    r = int(r)
+        r = int(r)
 
-    res_1, res_2 = estimate(Y, X, r, a, 
-        lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, **kwargs)
-        
+        res_1, res_2 = estimate(Y, X, r, a,
+            lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, **kwargs)
+
     return res_1, res_2
 
 
@@ -213,7 +221,7 @@ def estimate_r(Y, X, A, r_max, c=1.,
     r_max = np.max(r_list)
 
     # Estimate the residual deviance
-    res_glm = fit_glm(Y, X, offset=np.log(size_factor[:,0]), family=family, disp_glm=nuisance[0], maxiter=100, verbose=False)
+    res_glm = fit_glm_auto(Y, X, offset=np.log(size_factor[:,0]), family=family, disp_glm=nuisance[0], maxiter=100, verbose=False)
     u, s, vt = svds(res_glm[-1], k=r_max)
     if u.shape[1]<r_max:
         raise ValueError(f'The number of latent factors is larger than the rank of deviance residuals ({u.shape[1]}). Try to decrease the value of r.')

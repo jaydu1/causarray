@@ -1,10 +1,11 @@
 import numpy as np
+import contextlib
 import pandas as pd
 from causarray.DR_estimation import AIPW_mean, cross_fitting
 from causarray.gcate_glm import loess_fit, ls_fit
+import causarray.gcate_glm as _gcate_glm  # for _backend_override
 from causarray.DR_inference import fdx_control, bh_correction
 from causarray.utils import reset_random_seeds, pprint, tqdm, comp_size_factor, _filter_params
-
 
 
 
@@ -13,9 +14,8 @@ def compute_causal_estimand(
     Y, W, A, W_A=None, family='nb', offset=False,    
     Y_hat=None, pi_hat=None, mask=None,
     fdx=False, fdx_B=1000, fdx_alpha=0.05, fdx_c=0.1,     
-    verbose=False, random_state=0, **kwargs):
-    '''
-    Estimate the log-fold chanegs of treatment effects (LFCs) using AIPW.
+    verbose=False, random_state=0, backend: str = "auto", **kwargs):
+    '''Estimate the log-fold changes of treatment effects (LFCs) using AIPW.
 
     Parameters
     ----------
@@ -31,7 +31,7 @@ def compute_causal_estimand(
     W_A : array, optional
         n x d_A matrix of covariates for treatment. If None, W is used.
     family : str
-        The distribution of the outcome. The default is 'poisson'.
+        The distribution of the outcome. The default is \'poisson\'.
     offset : array-like, optional
         Offset for the model.
 
@@ -52,7 +52,9 @@ def compute_causal_estimand(
         The significance level for FDX control.
     fdx_c : float
         The augmentation parameter for FDX control.
-    
+    backend : str
+        GLM backend to use: ``"auto"`` (default), ``"fast"`` (force crispyx),
+        or ``"original"`` (force statsmodels).  Not thread-safe.
     verbose : bool
         Whether to print the model information.
     **kwargs : dict
@@ -64,6 +66,8 @@ def compute_causal_estimand(
         Dataframe of test results.
     '''
     reset_random_seeds(random_state)
+
+    ctx = _gcate_glm._backend_override(backend) if backend != "auto" else contextlib.nullcontext()
 
     # check the input data
     if isinstance(Y, pd.DataFrame):
@@ -115,8 +119,9 @@ def compute_causal_estimand(
         offset = None
         size_factors = np.ones(n)
     
-    Y_hat, pi_hat = cross_fitting(Y, A, W, W_A, family=family, offset=offset, 
-        Y_hat=Y_hat, pi_hat=pi_hat, mask=mask, random_state=random_state, verbose=verbose, **kwargs)
+    with ctx:
+        Y_hat, pi_hat = cross_fitting(Y, A, W, W_A, family=family, offset=offset, 
+            Y_hat=Y_hat, pi_hat=pi_hat, mask=mask, random_state=random_state, verbose=verbose, **kwargs)
     pi_hat = pi_hat.reshape(*A.shape)
 
     if verbose: pprint.pprint('Estimating AIPW mean...')

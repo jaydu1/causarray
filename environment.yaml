@@ -7,6 +7,7 @@ dependencies:
   - hdf5
   - ipykernel
   - joblib
+  - llvm-openmp
   - jupyter
   - matplotlib
   - numba

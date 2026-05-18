@@ -172,12 +172,24 @@ def comp_size_factor(counts, method='geomeans', lib_size=1e4, **kwargs):
         The size factors of the rows.
     '''
     if method=='geomeans':
-        # compute the geometric mean of all genes
-        log_geo_means = np.apply_along_axis(_geo_mean, axis=0, arr=counts)
-        log_size_factor = np.apply_along_axis(_normalize, axis=1, arr=counts, log_geo_means=log_geo_means)
+        # Vectorized geometric mean (per gene, ignoring zeros)
+        counts = np.asarray(counts, dtype=np.float64)
+        log_counts = np.where(counts > 0, np.log(counts), np.nan)
+        log_geo_means = np.nanmean(log_counts, axis=0)
+        # Genes with all-zero columns get -inf
+        all_zero = np.all(counts == 0, axis=0)
+        log_geo_means[all_zero] = -np.inf
+
+        # Vectorized normalize (median of log-ratio per cell)
+        log_cnts = np.where(counts > 0, np.log(counts), np.nan)
+        diff = log_cnts - log_geo_means[None, :]
+        # Mask: finite geo_mean AND positive count
+        mask = np.isfinite(log_geo_means)[None, :] & (counts > 0)
+        diff_masked = np.where(mask, diff, np.nan)
+        log_size_factor = np.nanmedian(diff_masked, axis=1)
         size_factor = np.exp(log_size_factor - np.mean(log_size_factor))
     elif method=='scale':
-        size_factor = 1./np.sum(Y, axis=0)*lib_size
+        size_factor = 1./np.sum(counts, axis=0)*lib_size
     else:
         raise ValueError("Method must be in {'geomeans' or 'scale'}.")
 

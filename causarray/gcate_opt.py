@@ -1,6 +1,6 @@
 from causarray.gcate_likelihood import *
 from causarray.utils import *
-from causarray.gcate_glm import *
+import causarray.gcate_glm as _gcate_glm  # module-qualified so _USE_FAST_BACKEND changes take effect at call time
 import scipy as sp
 from scipy.sparse.linalg import svds
 from joblib import Parallel, delayed
@@ -211,7 +211,7 @@ def alter_min(
     if A is None:
         if verbose:
             pprint.pprint('Estimating initial latent variables with GLMs...')
-        res_glm = fit_glm(Y, X, offset=np.log(size_factor[:,0]), family=family, disp_glm=nuisance[0], maxiter=100, verbose=verbose)
+        res_glm = _gcate_glm.fit_glm_auto(Y, X, offset=np.log(size_factor[:,0]), family=family, disp_glm=nuisance[0], maxiter=100, verbose=verbose)
         u, s, vt = svds(res_glm[-1], k=r)
 
         if u.shape[1]<r:
@@ -225,7 +225,7 @@ def alter_min(
         if verbose:
             pprint.pprint('Estimating initial coefficients with GLMs...')
         
-        B = fit_glm(Y, A, offset=np.log(size_factor[:,0]), family=family, disp_glm=nuisance[0], maxiter=100, verbose=verbose)[0]
+        B = _gcate_glm.fit_glm_auto(Y, A, offset=np.log(size_factor[:,0]), family=family, disp_glm=nuisance[0], maxiter=100, verbose=verbose)[0]
         
         E = A[:, -r:] @ B[:, -r:].T
         u, s, vh = sp.sparse.linalg.svds(E, k=r)        

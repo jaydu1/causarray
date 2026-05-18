@@ -24,6 +24,11 @@ The module can be installed via PyPI:
 pip install causarray
 ```
 
+For optimal parallel performance, we recommend installing `llvm-openmp` if using conda:
+```cmd
+conda install -c conda-forge llvm-openmp
+```
+
 For `R` users, `reticulate` can be used to call `causarray` from `R`.
 The documentation and tutorials using both `Python` and `R` are available at [causarray.readthedocs.io](https://causarray.readthedocs.io/en/latest/).
 

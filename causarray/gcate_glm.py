@@ -1,5 +1,6 @@
 from causarray.utils import *
 from causarray.utils import _filter_params
+import contextlib
 import numpy as np
 import statsmodels as stats
 import statsmodels.api as sm
@@ -8,6 +9,60 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 
 warnings.filterwarnings('ignore')
+
+from causarray.nb_glm_fast import fit_glm_fast, estimate_disp_fast
+
+# ---------------------------------------------------------------------------
+# Backend control flags
+# ---------------------------------------------------------------------------
+
+def _crispyx_available() -> bool:
+    """Return True if crispyx is importable."""
+    try:
+        import crispyx  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+_CRISPYX_AVAILABLE: bool = _crispyx_available()  # evaluated once at import time
+
+_USE_FAST_BACKEND: bool = True
+"""Set to False to force statsmodels path everywhere (benchmarking / debugging).
+
+Note: not thread-safe; use _backend_override() for scoped switching.
+"""
+
+_FAST_MAX_D: int = 30
+"""Maximum effective design width (d_eff) for the crispyx fast path.
+
+Increase to enable the fast path for wider designs; decrease to restrict it.
+"""
+
+
+@contextlib.contextmanager
+def _backend_override(backend: str):
+    """Context manager to temporarily force 'fast' or 'original' GLM backend.
+
+    Parameters
+    ----------
+    backend : str
+        ``"fast"`` to force crispyx, ``"original"`` to force statsmodels,
+        ``"auto"`` to leave the current setting unchanged.
+
+    Notes
+    -----
+    Not thread-safe: mutates the module-level ``_USE_FAST_BACKEND`` flag.
+    """
+    global _USE_FAST_BACKEND
+    old = _USE_FAST_BACKEND
+    if backend == "fast":
+        _USE_FAST_BACKEND = True
+    elif backend == "original":
+        _USE_FAST_BACKEND = False
+    try:
+        yield
+    finally:
+        _USE_FAST_BACKEND = old
 
 
 def init_inv_link(Y, family, disp):
@@ -276,5 +331,101 @@ def ls_fit(Y, X, n_jobs=-3, **kwargs):
     CATE_upper = np.array(CATE_upper).T
     return CATE, CATE_lower, CATE_upper
 
-    
+
+def fit_glm_auto(Y, X, A=None, family='gaussian', disp_family='poisson',
+    disp_glm=None, impute=False, offset=None, shrinkage=False,
+    alpha=1e-4, maxiter=1000, thres_disp=100., n_jobs=-3, random_state=0,
+    verbose=False, **kwargs):
+    """Fit GLM using crispyx's fast backend when available, falling back to statsmodels.
+
+    Routing logic (evaluated in order):
+
+    1. ``_USE_FAST_BACKEND is False``  → always use statsmodels.
+    2. ``_CRISPYX_AVAILABLE is False`` → crispyx not installed; use statsmodels.
+    3. ``family not in ('poisson', 'nb')`` → Gaussian; use statsmodels.
+    4. ``p < 50`` or ``d_eff > _FAST_MAX_D`` or throughput heuristic fails → use statsmodels.
+    5. crispyx path taken; if coefficients diverge → fall back to statsmodels.
+
+    Module-level knobs
+    ------------------
+    ``_USE_FAST_BACKEND`` : bool
+        Master on/off switch.  Use ``_backend_override()`` for scoped changes.
+    ``_FAST_MAX_D`` : int
+        Maximum effective design width for the fast path (default 30).
+    ``_CRISPYX_AVAILABLE`` : bool
+        Auto-detected at import time; set to False to simulate missing crispyx.
+
+    Parameters and return values are identical to ``fit_glm``.
+    """
+    if not _USE_FAST_BACKEND:
+        return fit_glm(
+            Y, X, A=A, family=family, disp_family=disp_family,
+            disp_glm=disp_glm, impute=impute, offset=offset,
+            shrinkage=shrinkage, alpha=alpha, maxiter=maxiter,
+            thres_disp=thres_disp, n_jobs=n_jobs,
+            random_state=random_state, verbose=verbose, **kwargs,
+        )
+
+    n, p = Y.shape
+    # When A is provided each perturbation is fit with a binary design of
+    # width d_cov+1, so d_eff stays small regardless of a.  When A is None
+    # the full X width drives crispyx's O(n*p*d²) einsum; for very wide X
+    # the per-gene statsmodels path is faster.
+    d_eff = X.shape[1] if A is None else X.shape[1] + 1  # effective per-model width
+    use_fast = (
+        _CRISPYX_AVAILABLE
+        and family in ('poisson', 'nb')
+        and p >= 50
+        and d_eff <= _FAST_MAX_D
+        and (n * p / d_eff ** 2) > 5_000  # throughput heuristic
+    )
+    if use_fast:
+        try:
+            result = fit_glm_fast(
+                Y, X, A=A, family=family, disp_family=disp_family,
+                disp_glm=disp_glm, impute=impute, offset=offset,
+                shrinkage=shrinkage, alpha=alpha, maxiter=maxiter,
+                thres_disp=thres_disp, n_jobs=n_jobs,
+                random_state=random_state, verbose=verbose, **kwargs,
+            )
+        except ImportError:
+            pass  # crispyx import failed at call time; fall through to statsmodels
+        else:
+            # Check for divergent coefficients — crispyx IRLS can diverge
+            # without the per-gene regularization fallback that statsmodels has.
+            B = result[0]
+            d = X.shape[1]
+            coef_ok = np.all(np.isfinite(B)) and np.all(np.abs(B[:, :d]) <= 50)
+            if A is not None:
+                coef_ok = coef_ok and np.all(np.abs(B[:, d:]) <= 10)
+            if coef_ok:
+                return result
+            if verbose:
+                pprint.pprint('Fast GLM diverged, falling back to statsmodels...')
+    return fit_glm(
+        Y, X, A=A, family=family, disp_family=disp_family,
+        disp_glm=disp_glm, impute=impute, offset=offset,
+        shrinkage=shrinkage, alpha=alpha, maxiter=maxiter,
+        thres_disp=thres_disp, n_jobs=n_jobs,
+        random_state=random_state, verbose=verbose, **kwargs,
+    )
+
+
+def estimate_disp_auto(Y, X=None, A=None, Y_hat=None, disp_family='gaussian',
+    offset=None, verbose=False, **kwargs):
+    """Estimate NB dispersion using crispyx when available, falling back to statsmodels.
+
+    Respects ``_USE_FAST_BACKEND`` and ``_CRISPYX_AVAILABLE`` flags.
+    Parameters and return values are identical to ``estimate_disp``.
+    """
+    p = Y.shape[1]
+    if _USE_FAST_BACKEND and _CRISPYX_AVAILABLE and p >= 50:
+        # Use covariate-only design for dispersion — treatment indicators
+        # don't affect gene-level overdispersion, and including many
+        # treatment columns makes the batch fitter very slow.
+        X_disp = X if X is not None else np.ones((Y.shape[0], 1))
+        try:
+            return estimate_disp_fast(Y, X_disp, offset=offset, method='moments')
+        except ImportError:
+            pass  # crispyx import failed at call time; fall through
     
