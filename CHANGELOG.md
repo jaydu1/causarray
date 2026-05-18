@@ -11,6 +11,7 @@
 - **Weighted dispersion** (`nb_glm_fast.py`): Dispersion averaging in `_fit_glm_fast_per_perturbation` is now cell-count-weighted instead of unweighted; low-coverage perturbations contribute proportionally less to the pooled dispersion estimate.
 - **Control-cell residuals** (`nb_glm_fast.py`): Control-cell deviance residuals and fitted values in `_fit_glm_fast_per_perturbation` are now initialised from the Stage-1 global covariate model; the loop overwrites only treated-cell rows, eliminating the last-perturbation overwrite bug.
 - **Module-qualified imports** (`gcate_opt.py`, `gcate.py`, `DR_estimation.py`): Replaced import-time name bindings of `fit_glm_auto` / `estimate_disp_auto` with module-qualified references (`_gcate_glm.fit_glm_auto`) so backend toggles propagate correctly at call time.
+- **`estimate_r` bare name** (`gcate.py`): Fixed remaining bare `fit_glm_auto` call in `estimate_r()` missed by the module-qualified import refactor; now calls `_gcate_glm.fit_glm_auto()` — previously raised `NameError` when `estimate_r` was invoked.
 - **crispyx availability check** (`gcate_glm.py`): Added `_CRISPYX_AVAILABLE` flag (evaluated once at import time) and `ImportError` guard inside the fast path; users without crispyx now get a transparent fallback to statsmodels instead of a traceback.
 - **Dead code removal** (`nb_glm_fast.py`): Removed unreachable first `np.where` assignment in `_compute_poisson_deviance_residuals` (Y=0 branch evaluated to `-mu + mu = 0` and was silently overwritten).
 
@@ -36,7 +37,10 @@
 - **`gcate_opt.py`**: `alter_min()` initialization now calls `fit_glm_auto()` instead of `fit_glm()`.
 - **`gcate.py`**: `_check_input()` now calls `estimate_disp_auto()` instead of `estimate_disp()`; `estimate_r()` now calls `fit_glm_auto()`.
 - **`DR_estimation.py`**: `cross_fitting()` now calls `fit_glm_auto()`, enabling the per-perturbation fast path for multi-treatment LFC estimation.
+- **`DR_learner.py`**: `LFC()` now accepts `backend: str = "auto"` as an explicit documented parameter (previously forwarded silently via `**kwargs`); `"fast"` forces crispyx, `"original"` forces statsmodels.
 - **`utils.py`**: `comp_size_factor()` vectorized with `np.nanmean`/`np.nanmedian`, replacing slow `np.apply_along_axis` loop.
+- **`tests/test_fit_glm_numpy.py`**: Replaced broken `from causarray.numpy_glm import fit_glm_numpy` import (module did not exist) with correct `from causarray.nb_glm_fast import fit_glm_fast`; rewrote tests to match the actual API (n×p `Y` matrix, correct return-shape assertions, coefficient comparison against statsmodels).
+- **`plan/20260518/01_benchmark.py`**: Removed obsolete monkey-patching helpers (`force_original_backend`, `force_fast_backend`) that broke after the module-qualified import refactor; benchmark now passes `backend` parameter directly to `fit_gcate` and `LFC`.
 
 ### Performance
 

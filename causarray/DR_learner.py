@@ -177,7 +177,7 @@ def LFC(
     Y_hat=None, pi_hat=None, cross_est=False,  mask=None, usevar='pooled',
     thres_min=1e-2, thres_diff=1e-2, eps_var=1e-4,
     fdx=False, fdx_alpha=0.05, fdx_c=0.1,     
-    verbose=False, **kwargs):
+    verbose=False, backend: str = "auto", **kwargs):
     '''
     Estimate the log-fold chanegs of treatment effects (LFCs) using AIPW.
 
@@ -223,6 +223,10 @@ def LFC(
     
     verbose : bool
         Whether to print the model information.
+    backend : str
+        GLM backend: ``"auto"`` (default), ``"fast"`` (force crispyx),
+        ``"original"`` (force statsmodels). Passed to
+        ``compute_causal_estimand``.
     kwargs : dict
         Additional arguments to pass to fit_glm.
     
@@ -262,7 +266,8 @@ def LFC(
     return compute_causal_estimand(
         estimand, Y, W, A, W_A, family, offset,    
         Y_hat=Y_hat, pi_hat=pi_hat, mask=mask,
-        fdx=fdx, fdx_alpha=fdx_alpha, fdx_c=fdx_c, verbose=verbose, **kwargs)
+        fdx=fdx, fdx_alpha=fdx_alpha, fdx_c=fdx_c,
+        verbose=verbose, backend=backend, **kwargs)
 
 
 

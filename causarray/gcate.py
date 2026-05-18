@@ -221,7 +221,7 @@ def estimate_r(Y, X, A, r_max, c=1.,
     r_max = np.max(r_list)
 
     # Estimate the residual deviance
-    res_glm = fit_glm_auto(Y, X, offset=np.log(size_factor[:,0]), family=family, disp_glm=nuisance[0], maxiter=100, verbose=False)
+    res_glm = _gcate_glm.fit_glm_auto(Y, X, offset=np.log(size_factor[:,0]), family=family, disp_glm=nuisance[0], maxiter=100, verbose=False)
     u, s, vt = svds(res_glm[-1], k=r_max)
     if u.shape[1]<r_max:
         raise ValueError(f'The number of latent factors is larger than the rank of deviance residuals ({u.shape[1]}). Try to decrease the value of r.')
