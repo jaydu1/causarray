@@ -214,8 +214,8 @@ def fit_glm(Y, X, A=None, family='gaussian', disp_family='poisson',
             pprint.pprint('Fitting GLM for column {} does not converge.'.format(j))
             B = np.full(X.shape[1], 0.)
             
-            Yhat_0 = np.full((Y.shape[0], a), 0)
-            Yhat_1 = np.full((Y.shape[0], a), 0)
+            Yhat_0 = np.full((Y.shape[0], a), 0.)
+            Yhat_1 = np.full((Y.shape[0], a), 0.)
             if impute is not False:
                 for k in range(a):
                     Yhat_0[:, k] = np.mean(Y[A[:, k] == 1, j])
@@ -391,13 +391,14 @@ def fit_glm_auto(Y, X, A=None, family='gaussian', disp_family='poisson',
         except ImportError:
             pass  # crispyx import failed at call time; fall through to statsmodels
         else:
-            # Check for divergent coefficients — crispyx IRLS can diverge
-            # without the per-gene regularization fallback that statsmodels has.
+            # Sanity check: crispyx IRLS should produce finite coefficients.
+            # Column preconditioning in _fit_glm_fast_single eliminates the
+            # ill-conditioning that previously caused ~5× coefficient blow-up
+            # vs statsmodels.  We now only guard against NaN/inf outputs;
+            # an absolute-magnitude threshold would fire spuriously on
+            # latent-factor designs where large unscaled coefs are expected.
             B = result[0]
-            d = X.shape[1]
-            coef_ok = np.all(np.isfinite(B)) and np.all(np.abs(B[:, :d]) <= 50)
-            if A is not None:
-                coef_ok = coef_ok and np.all(np.abs(B[:, d:]) <= 10)
+            coef_ok = np.all(np.isfinite(B))
             if coef_ok:
                 return result
             if verbose:

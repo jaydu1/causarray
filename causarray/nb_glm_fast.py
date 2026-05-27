@@ -33,6 +33,38 @@ _SPARSE_WARN_GB: float = 4.0
 exceed this many gigabytes."""
 
 
+def _scale_design_columns(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Standardize design-matrix columns to unit std (excluding constant cols).
+
+    crispyx's IRLS solver does not precondition the design matrix.  When
+    columns have very different scales (e.g. intercept std=0 alongside latent
+    factor columns with std≈0.009) the weighted normal equations XᵀWX become
+    ill-conditioned and coefficients can blow up by 5× or more vs statsmodels.
+
+    This function scales each column by its standard deviation so that all
+    non-constant columns have unit variance going into the IRLS solver.
+    Constant columns (intercept, std≈0) are left unchanged.
+
+    Parameters
+    ----------
+    X : (n, d) array
+        Design matrix with at least one column.
+
+    Returns
+    -------
+    X_scaled : (n, d) array
+        Column-scaled design matrix.
+    col_scale : (d,) array
+        Scale factors (std per column; 1.0 for constant columns).
+        To recover original-space coefficients from scaled-space coefficients::
+
+            B_original = B_scaled / col_scale  # (p, d)
+    """
+    col_scale = X.std(axis=0)
+    col_scale = np.where(col_scale > 1e-8, col_scale, 1.0)
+    return X / col_scale, col_scale
+
+
 def _maybe_densify(Y: np.ndarray) -> np.ndarray:
     """Convert sparse or non-float64 Y to a dense float64 array.
 
@@ -269,12 +301,19 @@ def _fit_glm_fast_single(
     """
     from crispyx.glm import NBGLMBatchFitter
 
+    # Column-precondition X_full so that crispyx's IRLS sees unit-std columns.
+    # crispyx does not internally normalize the design matrix; poorly-scaled
+    # columns (e.g. latent factor columns with std≈0.009) cause XᵀWX to be
+    # ill-conditioned and blow up coefficients by ~5× vs statsmodels.
+    # We fit in scaled space and recover original-space coefficients afterwards.
+    X_scaled, col_scale = _scale_design_columns(X_full)
+
     # Convert causarray's disp_glm (r) to crispyx's alpha = 1/r
     fixed_alpha = 1.0 / np.clip(disp_glm, 0.01, 1e6) if disp_glm is not None else None
 
     if family == "nb":
         fitter = NBGLMBatchFitter(
-            design=X_full,
+            design=X_scaled,
             offset=offset_arr,
             max_iter=min(maxiter, 50),
             poisson_init_iter=5,
@@ -284,7 +323,8 @@ def _fit_glm_fast_single(
         result = fitter.fit_batch_with_joint_offsets(
             Y_float, fixed_dispersion=fixed_alpha,
         )
-        B = result.coef
+        # Recover original-space coefficients: b_j = b_scaled_j / scale_j
+        B = result.coef / col_scale  # (p, d)
 
         eta = X_full @ B.T + offset_arr[:, None]
         Yhat = np.exp(np.clip(eta, -20, 20))
@@ -296,7 +336,7 @@ def _fit_glm_fast_single(
 
     elif family == "poisson":
         fitter = NBGLMBatchFitter(
-            design=X_full,
+            design=X_scaled,
             offset=offset_arr,
             max_iter=min(maxiter, 50),
             poisson_init_iter=10,
@@ -304,7 +344,8 @@ def _fit_glm_fast_single(
             min_mu=0.5,
         )
         result = fitter.fit_batch(Y_float)
-        B = result.coef
+        # Recover original-space coefficients
+        B = result.coef / col_scale  # (p, d)
 
         eta = X_full @ B.T + offset_arr[:, None]
         Yhat = np.exp(np.clip(eta, -20, 20))
@@ -338,34 +379,50 @@ def _fit_glm_fast_per_perturbation(
     ctrl_mask = A.sum(axis=1) == 0  # control cells
 
     # ── Stage 1: Global covariate model on ALL cells ─────────────────────
+    # Column-precondition X so that crispyx's IRLS sees unit-std columns.
+    # Without scaling, latent-factor columns (std≈0.009) make XᵀWX ill-
+    # conditioned, inflating B_cov_global by ~5–10× and propagating into
+    # cov_offset_all → artificially large treatment effects for zero-inflated
+    # genes that bypass the thres_min guard in DR_learner.
+    X_scaled_global, col_scale_global = _scale_design_columns(X)
+
+    # min_mu for the IRLS must be well below thres_min=0.01 in DR_learner so
+    # that near-zero genes (true mean ≈ 0.001) get small Yhat predictions.
+    # With min_mu=0.5 (old default), Yhat_0≈0.5 and Yhat_1≈0.184 for near-zero
+    # genes → AIPW tau_1 ≈ 0.18 >> thres_min → spurious tau ≈ 2.9 artifacts.
+    # With min_mu=1e-4: Yhat predictions for near-zero genes are tiny → both
+    # tau_0 and tau_1 clip to thres_diff=0.01 → |diff|=0 → guard fires. ✓
+    _IRLS_MIN_MU = 1e-4
+
     if family == "nb":
         fitter_global = NBGLMBatchFitter(
-            design=X,
+            design=X_scaled_global,
             offset=offset_arr,
             max_iter=min(maxiter, 50),
             poisson_init_iter=5,
             dispersion_method="moments",
-            min_mu=0.5,
+            min_mu=_IRLS_MIN_MU,
         )
         result_global = fitter_global.fit_batch(Y_float)
-        B_cov_global = result_global.coef  # (p, d)
+        B_cov_global = result_global.coef / col_scale_global  # (p, d) original-space
         global_alpha = result_global.dispersion  # (p,)
         global_alpha = np.clip(global_alpha, 1e-8, 100.0)
         global_alpha[~np.isfinite(global_alpha)] = 1.0
     elif family == "poisson":
         fitter_global = NBGLMBatchFitter(
-            design=X,
+            design=X_scaled_global,
             offset=offset_arr,
             max_iter=min(maxiter, 50),
             poisson_init_iter=10,
             dispersion_method="moments",
-            min_mu=0.5,
+            min_mu=_IRLS_MIN_MU,
         )
         result_global = fitter_global.fit_batch(Y_float)
-        B_cov_global = result_global.coef
+        B_cov_global = result_global.coef / col_scale_global  # (p, d) original-space
         global_alpha = None
 
     # Precompute covariate offset for all cells: (n, p)
+    # Using original-space X and B_cov_global (equivalent to X_scaled @ B_scaled).
     cov_offset_all = X @ B_cov_global.T  # (n, p)
 
     # ── Stage 2: Per-perturbation treatment effects ──────────────────────
@@ -418,7 +475,7 @@ def _fit_glm_fast_per_perturbation(
                 max_iter=min(maxiter, 50),
                 poisson_init_iter=5,
                 dispersion_method="moments",
-                min_mu=0.5,
+                min_mu=_IRLS_MIN_MU,
             )
             result = fitter.fit_batch_with_joint_offsets(
                 Y_sub,
@@ -443,7 +500,7 @@ def _fit_glm_fast_per_perturbation(
                 max_iter=min(maxiter, 50),
                 poisson_init_iter=10,
                 dispersion_method="moments",
-                min_mu=0.5,
+                min_mu=_IRLS_MIN_MU,
             )
             result = fitter.fit_batch_with_joint_offsets(
                 Y_sub,

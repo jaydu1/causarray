@@ -146,9 +146,15 @@ def cross_fitting(
 
         if fit_Y:
             if verbose: pprint.pprint('Fit outcome models...')
+            # Subset offset to training fold when it is a pre-computed array so
+            # that fit_glm_auto receives arrays with matching leading dimension.
+            params_glm_fold = params_glm
+            if 'offset' in params_glm and isinstance(params_glm['offset'], np.ndarray):
+                params_glm_fold = dict(params_glm)
+                params_glm_fold['offset'] = params_glm['offset'][train_index]
             # Fit GLM on training data and predict on test data
             res = _gcate_glm.fit_glm_auto(Y_train, X_train, A_train, family=family, alpha=glm_alpha,
-                impute=X_test, **params_glm)
+                impute=X_test, **params_glm_fold)
             Y_hat[test_index,:,:,0] = res[1][0]
             Y_hat[test_index,:,:,1] = res[1][1]
 

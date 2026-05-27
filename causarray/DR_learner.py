@@ -141,7 +141,9 @@ def compute_causal_estimand(
             i_ctrl = (np.sum(A, axis=1) == 0.)
             i_case = (A[:,j] == 1.)
             i_cells = i_ctrl | i_case
-        eta_est, tau_est, var_est = estimand(etas[i_cells,:,j], A[i_cells,j], **kwargs)
+        _ret = estimand(etas[i_cells,:,j], A[i_cells,j], **kwargs)
+        eta_est, tau_est, var_est = _ret[:3]
+        df_est = _ret[3] if len(_ret) > 3 else None
 
         std_est = np.sqrt(var_est)
         tvalues_init = tau_est / std_est
@@ -151,7 +153,7 @@ def compute_causal_estimand(
 
         # BH correction
         tvalues_init[np.isinf(std_est)] = np.nan
-        pvals, qvals, pvals_adj, qvals_adj = bh_correction(tvalues_init)
+        pvals, qvals, pvals_adj, qvals_adj = bh_correction(tvalues_init, df=df_est)
         
         df_res = pd.DataFrame({
             'gene_names': gene_names,            
@@ -174,7 +176,7 @@ def compute_causal_estimand(
 
 def LFC(
     Y, W, A, W_A=None, family='nb', offset=False,    
-    Y_hat=None, pi_hat=None, cross_est=False,  mask=None, usevar='pooled',
+    Y_hat=None, pi_hat=None, cross_est=False,  mask=None, usevar='unequal',
     thres_min=1e-2, thres_diff=1e-2, eps_var=1e-4,
     fdx=False, fdx_alpha=0.05, fdx_c=0.1,     
     verbose=False, backend: str = "auto", **kwargs):
@@ -245,23 +247,30 @@ def LFC(
         tau_est = np.log(tau_1/tau_0)
         eta_est = eta_1 / tau_1[None,:] -  eta_0 / tau_0[None,:]
 
+        df_eff = None
         if usevar == 'pooled':
             var_est = (np.var(eta_est, axis=0, ddof=1) + eps_var) / eta_est.shape[0]
         elif usevar == 'unequal':
-            # Estimate the variance using Welch's t-test
+            # Welch variance: SE² = s₀²/n₀ + s₁²/n₁
             var_0 = np.var(eta_est[A==0], axis=0, ddof=1)
             var_1 = np.var(eta_est[A==1], axis=0, ddof=1)
             n_0 = np.sum(A==0)
             n_1 = np.sum(A==1)
-            var_est = ((var_0 + eps_var) / n_0 + (var_1 + eps_var) / n_1) / 2
+            v0 = (var_0 + eps_var) / n_0
+            v1 = (var_1 + eps_var) / n_1
+            var_est = v0 + v1
+            # Welch-Satterthwaite degrees of freedom (per gene)
+            df_eff = (v0 + v1)**2 / (v0**2 / (n_0 - 1) + v1**2 / (n_1 - 1))
         else:
             raise ValueError('usevar must be either "pooled" or "unequal"')
 
         # filter out low-expressed genes
         idx = (np.maximum(np.abs(tau_0),np.abs(tau_1))<thres_min) | (np.abs(tau_1-tau_0)<thres_diff)
         tau_est[idx] = 0.; eta_est[:,idx] = 0.; var_est[idx] = np.inf
+        if df_eff is not None:
+            df_eff[idx] = np.nan
 
-        return eta_est, tau_est, var_est
+        return eta_est, tau_est, var_est, df_eff
 
     return compute_causal_estimand(
         estimand, Y, W, A, W_A, family, offset,    

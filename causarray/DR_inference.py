@@ -150,7 +150,7 @@ def fdx_control(
     return V
 
 
-def bh_correction(tvalues_init):
+def bh_correction(tvalues_init, df=None):
     '''
     Perform BH correction.
 
@@ -179,7 +179,10 @@ def bh_correction(tvalues_init):
     qvals_adj = np.full(tvalues_init.shape, np.nan)
 
     if np.sum(idx) > 0:
-        pvals[idx] = sp.stats.norm.sf(np.abs(tvalues_init[idx]))*2
+        if df is not None:
+            pvals[idx] = sp.stats.t.sf(np.abs(tvalues_init[idx]), df=df[idx]) * 2
+        else:
+            pvals[idx] = sp.stats.norm.sf(np.abs(tvalues_init[idx])) * 2
         qvals[idx] = multipletests(pvals[idx], alpha=0.05, method='fdr_bh')[1]
 
         # BH correction with empirical null adjustment
@@ -189,7 +192,10 @@ def bh_correction(tvalues_init):
         if mad>0:
             tvalues_init_adj = (tvalues_init - med) / mad
 
-            pvals_adj[idx] = sp.stats.norm.sf(np.abs(tvalues_init_adj[idx]))*2
+            if df is not None:
+                pvals_adj[idx] = sp.stats.t.sf(np.abs(tvalues_init_adj[idx]), df=df[idx]) * 2
+            else:
+                pvals_adj[idx] = sp.stats.norm.sf(np.abs(tvalues_init_adj[idx])) * 2
             qvals_adj[idx] = multipletests(pvals_adj[idx], alpha=0.05, method='fdr_bh')[1]
     
     return pvals, qvals, pvals_adj, qvals_adj
