@@ -101,11 +101,26 @@ def _filter_params(func, kwargs):
 class Early_Stopping():
     '''
     The early-stopping monitor.
+
+    Parameters
+    ----------
+    tolerance : float
+        Minimum absolute improvement in the metric to count as progress.
+        Default 0 (disabled).  Can be combined with ``rel_tol``.
+    rel_tol : float
+        Minimum *relative* improvement in the metric to count as progress,
+        i.e. the threshold is ``rel_tol * |best_metric|``.  Default 1e-4.
+        This is scale-invariant and avoids the false-convergence problem that
+        occurs with a fixed absolute threshold when the per-gene NLL is small
+        (e.g. many lowly-expressed genes dilute the average NLL, making
+        per-epoch improvements far smaller than any fixed absolute threshold).
     '''
-    def __init__(self, warmup=25, patience=25, tolerance=0., is_minimize=True, **kwargs):
+    def __init__(self, warmup=25, patience=25, tolerance=0., rel_tol=1e-4,
+                 is_minimize=True, **kwargs):
         self.warmup = warmup
         self.patience = patience
         self.tolerance = tolerance
+        self.rel_tol = rel_tol
         self.is_minimize = is_minimize
 
         self.step = -1
@@ -120,15 +135,23 @@ class Early_Stopping():
 
     def __call__(self, metric):
         self.step += 1
-        
+
         if self.step < self.warmup:
             return False
-        elif self.factor*metric<self.factor*self.best_metric-self.tolerance:
+
+        # Threshold: max of absolute and relative tolerance.
+        # rel_tol is scale-invariant (handles small per-gene NLL when p is large).
+        if np.isfinite(self.best_metric):
+            threshold = self.tolerance + self.rel_tol * abs(self.best_metric)
+        else:
+            threshold = 0.
+
+        if self.factor * metric < self.factor * self.best_metric - threshold:
             self.best_metric = metric
             self.best_step = self.step
             return False
-        elif self.step - self.best_step>self.patience:
-            self.info = 'Best Epoch: %d. Best Metric: %f.'%(self.best_step, self.best_metric)
+        elif self.step - self.best_step > self.patience:
+            self.info = 'Best Epoch: %d. Best Metric: %f.' % (self.best_step, self.best_metric)
             return True
         else:
             return False

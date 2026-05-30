@@ -23,7 +23,7 @@ library(caret)
 
 sc.seurat <- readRDS("perturbseq-exneu.rds")
 
-Y <- data.frame(t(sc.seurat[['RNA']]$counts)) # cell-by-gene matrix
+Y <- data.frame(t(as.matrix(sc.seurat[['RNA']]$counts))) # cell-by-gene matrix
 metadata <- sc.seurat@meta.data
 
 perturb <- metadata

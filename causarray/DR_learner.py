@@ -75,7 +75,15 @@ def compute_causal_estimand(
         Y = Y.values
     else:
         gene_names = range(Y.shape[1])
-    Y = Y.astype('float')
+    # Use float32 when Y_hat allocation would exceed mem_limit_gb.
+    # Y_hat = (n, p, a, 2) × 8 bytes; if that > mem_limit_gb we use float32
+    # for Y_hat (cross_fitting) AND Y here so that "Y - mu" in AIPW_mean
+    # stays float32, halving peak memory (~420 GB → ~210 GB for Adamson).
+    _a_shape = A.shape[1] if hasattr(A, 'shape') and len(A.shape) > 1 else 1
+    _yhat_gb = Y.shape[0] * Y.shape[1] * _a_shape * 2 * 8 / 1e9
+    _mem_limit = kwargs.get('mem_limit_gb', 64)
+    _use_f32 = _yhat_gb > _mem_limit
+    Y = Y.astype(np.float32 if _use_f32 else float)
     n, p = Y.shape
 
     if len(A.shape) == 1:

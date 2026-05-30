@@ -37,7 +37,8 @@ def _check_input(Y, X, family, disp_glm, disp_family, offset, c1, **kwargs):
     if kwargs_glm['family']=='nb':
         if disp_family is None:
             disp_family = 'poisson'
-        disp_glm = _gcate_glm.estimate_disp_auto(Y, X, offset=offset, disp_family=disp_family, maxiter=1000, **kwargs)
+        if disp_glm is None:
+            disp_glm = _gcate_glm.estimate_disp_auto(Y, X, offset=offset, disp_family=disp_family, maxiter=1000, **kwargs)
     if disp_glm is not None:
         kwargs_glm['disp_glm'] = disp_glm
             
@@ -151,7 +152,9 @@ def estimate(Y, X, r, a, lam1,
         Y, r, X=X, P1=True,
         kwargs_glm=kwargs_glm, kwargs_ls=kwargs_ls_1, kwargs_es=kwargs_es_1, **valid_params)
     Q, _ = sp.linalg.qr(res_1['B_Gamma'][:,-r:], mode='economic')
-    P_Gamma = np.identity(p) - Q @ Q.T    
+    # Store thin Q factor (p, r) instead of full (p, p) projection matrix.
+    # For Adamson (p=14618, r=5) this saves ~1.7 GB.
+    P_Gamma = Q.astype(np.float32)
 
     if lam1 == 0.:
         res_2 = {'X_U': res_1['X_U'], 'B_Gamma': res_1['B_Gamma']}

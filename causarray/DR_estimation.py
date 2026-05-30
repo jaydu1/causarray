@@ -102,7 +102,19 @@ def cross_fitting(
     fit_pi = True if pi_hat is None else False
     pi_hat = np.zeros_like(A, dtype=float) if fit_pi else pi_hat
     fit_Y = True if Y_hat is None else False
-    Y_hat = np.zeros((Y.shape[0],Y.shape[1],A.shape[1],2), dtype=float) if fit_Y else Y_hat
+    if fit_Y:
+        _yhat_gb = Y.shape[0] * Y.shape[1] * A.shape[1] * 2 * 8 / 1e9
+        _mem_limit_gb = kwargs.get('mem_limit_gb', None)
+        if _mem_limit_gb is not None and _yhat_gb > _mem_limit_gb:
+            import warnings
+            warnings.warn(
+                f"Y_hat allocation ({_yhat_gb:.1f} GB as float64) exceeds "
+                f"mem_limit_gb={_mem_limit_gb} GB; using float32 to halve peak memory.",
+                ResourceWarning, stacklevel=3,
+            )
+            Y_hat = np.zeros((Y.shape[0], Y.shape[1], A.shape[1], 2), dtype=np.float32)
+        else:
+            Y_hat = np.zeros((Y.shape[0], Y.shape[1], A.shape[1], 2), dtype=float)
 
     # perform ECV at once
     if fit_pi and ps_model == 'random_forest_cv':

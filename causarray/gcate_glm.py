@@ -32,10 +32,12 @@ _USE_FAST_BACKEND: bool = True
 Note: not thread-safe; use _backend_override() for scoped switching.
 """
 
-_FAST_MAX_D: int = 30
+_FAST_MAX_D: int = 50
 """Maximum effective design width (d_eff) for the crispyx fast path.
 
 Increase to enable the fast path for wider designs; decrease to restrict it.
+Raised from 30→50 so that GCATE's B-initialisation (d_eff = d+a+r, up to ~35
+on typical datasets) uses the fast crispyx path instead of statsmodels.
 """
 
 
@@ -83,7 +85,8 @@ def init_inv_link(Y, family, disp):
 
 def fit_glm(Y, X, A=None, family='gaussian', disp_family='poisson',
     disp_glm=None, impute=False, offset=None, shrinkage=False,
-    alpha=1e-4, maxiter=1000, thres_disp=100., n_jobs=-3, random_state=0, verbose=False, **kwargs):
+    alpha=1e-4, maxiter=1000, thres_disp=100., n_jobs=-3, random_state=0, verbose=False,
+    mem_limit_gb=None, **kwargs):
     '''
     Fit GLM to each column of Y, with covariate X and treatment A.
 
@@ -335,7 +338,7 @@ def ls_fit(Y, X, n_jobs=-3, **kwargs):
 def fit_glm_auto(Y, X, A=None, family='gaussian', disp_family='poisson',
     disp_glm=None, impute=False, offset=None, shrinkage=False,
     alpha=1e-4, maxiter=1000, thres_disp=100., n_jobs=-3, random_state=0,
-    verbose=False, **kwargs):
+    verbose=False, mem_limit_gb=None, **kwargs):
     """Fit GLM using crispyx's fast backend when available, falling back to statsmodels.
 
     Routing logic (evaluated in order):

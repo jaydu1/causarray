@@ -101,13 +101,17 @@ def update(Y, A, B, d, lam, P1, P2,
                               family, nuisance[0], Ys[i, :], thres_disp, 0, 
                               type_f(0.), alpha, beta, max_iters, tol)
     if P1 is not None:
-        A[:, d:] = P1 @ A[:, d:]
+        # Implicit projection: (I - Q @ Q.T) @ v = v - Q @ (Q.T @ v)
+        # P1 is the thin Q factor (n, d_X), not the full (n, n) matrix.
+        A[:, d:] -= P1 @ (P1.T @ A[:, d:])
     
     g = grad(Y, A, B, family, nuisance, thres_disp)
     if P1 is not None:
         g[:, :d] = 0.
     elif P2 is not None:
-        g[:, d-a:d] = P2 @ g[:, d-a:d]
+        # Implicit projection: (I - Q @ Q.T) @ v = v - Q @ (Q.T @ v)
+        # P2 is the thin Q factor (p, r), not the full (p, p) matrix.
+        g[:, d-a:d] -= P2 @ (P2.T @ g[:, d-a:d])
         g[:, d:] = 0.
         g[:, :d-a] = 0.
 
@@ -121,6 +125,67 @@ def update(Y, A, B, d, lam, P1, P2,
                               family, nuisance[:,j], Ys[:, j], thres_disp, d-a,
                               lam[j,:], alpha, beta, max_iters, tol
                              )
+
+    if P2 is None:
+        B[:, d:] = np.clip(B[:, d:], -10., 10.)
+    func_val = nll(Y, A, B, family, nuisance, Ys, thres_disp)
+
+    return func_val, A, B
+
+
+@njit(parallel=True)
+def update_with_mask(Y, A, B, d, lam, P1, P2,
+                     family, nuisance, Ys, thres_disp, a, C,
+                     alpha, beta, max_iters, tol,
+                     gene_active, cell_active, alpha_gene):
+    """update() extended with per-gene and per-cell convergence masks.
+
+    Parameters
+    ----------
+    gene_active : (p,) bool array
+        Only genes where gene_active[j] == True get their B row updated.
+    cell_active : (n,) bool array
+        Only cells where cell_active[i] == True get their A row updated.
+    alpha_gene : (p,) float64 array
+        Per-gene initial step size for the backtracking line search.
+        Use alpha_gene[j] = alpha for uniform step sizes.
+    """
+    n, p = Y.shape
+
+    # ---- A-step (update cell latent factors) ----
+    g = grad(Y.T, B, A, family, nuisance.T, thres_disp)
+    g[:, :d] = 0.
+    for i in prange(n):
+        if cell_active[i]:
+            g[i, d:] = project_norm_ball(g[i, d:], 2*C)
+            A[i, :] = line_search(Y[i, :], B, A[i, :], g[i, :], d,
+                                  family, nuisance[0], Ys[i, :], thres_disp, 0,
+                                  type_f(0.), alpha, beta, max_iters, tol)
+    if P1 is not None:
+        # Implicit projection: (I - Q @ Q.T) @ v = v - Q @ (Q.T @ v)
+        # P1 is the thin Q factor (n, d_X), not the full (n, n) matrix.
+        A[:, d:] -= P1 @ (P1.T @ A[:, d:])
+
+    # ---- B-step (update gene coefficients) ----
+    g = grad(Y, A, B, family, nuisance, thres_disp)
+    if P1 is not None:
+        g[:, :d] = 0.
+    elif P2 is not None:
+        # Implicit projection: (I - Q @ Q.T) @ v = v - Q @ (Q.T @ v)
+        # P2 is the thin Q factor (p, r), not the full (p, p) matrix.
+        g[:, d-a:d] -= P2 @ (P2.T @ g[:, d-a:d])
+        g[:, d:] = 0.
+        g[:, :d-a] = 0.
+
+    for j in prange(p):
+        if gene_active[j]:
+            if P2 is None:
+                g[j, d:] = project_norm_ball(g[j, d:], 2*C)
+            else:
+                g[j, :d] = project_norm_ball(g[j, :d], 2*C)
+            B[j, :] = line_search(Y[:, j], A, B[j, :], g[j, :], d,
+                                  family, nuisance[:, j], Ys[:, j], thres_disp, d-a,
+                                  lam[j, :], alpha_gene[j], beta, max_iters, tol)
 
     if P2 is None:
         B[:, d:] = np.clip(B[:, d:], -10., 10.)
@@ -185,8 +250,17 @@ def alter_min(
 
     kwargs_glm = {**{'family':'poisson', 'disp_glm':np.ones(p), 'size_factor':np.ones(n)
         }, **kwargs_glm}
-    kwargs_ls = {**{'alpha':0.1, 'beta':0.5, 'max_iters':20, 'tol':1e-4, 'C':None}, **kwargs_ls}
-    kwargs_es = {**{'max_iters':500, 'warmup':0, 'patience':5, 'tolerance':1e-3}, **kwargs_es}
+    kwargs_ls = {**{
+        'alpha': 0.1, 'beta': 0.5, 'max_iters': 20, 'tol': 1e-4, 'C': None,
+        # Convergence mask parameters (G1-G3)
+        'tol_gene': 1e-4,          # per-gene B-row step-norm threshold; 0 = disabled
+        'tol_cell': 1e-4,          # per-cell A-row step-norm threshold; 0 = disabled
+        'recheck_interval': 10,    # re-activate all entities every N iters
+        'sparsity_threshold': 0.5, # zero-fraction above which gene is considered sparse
+        'sparsity_boost': 2.0,     # alpha multiplier for sparse genes
+        'warmup_iters': 0,         # B-only warm-up iterations for sparse genes after init
+    }, **kwargs_ls}
+    kwargs_es = {**{'max_iters':50, 'warmup':0, 'patience':5, 'tolerance':0., 'rel_tol':2e-4}, **kwargs_es}
 
     if kwargs_es['max_iters'] == 0:
         return A, B, {'n_iter':0, 'func_val':0., 'resid':0., 'hist':[0.], 'kwargs_glm':kwargs_glm, 'kwargs_ls':kwargs_ls, 'kwargs_es':kwargs_es}
@@ -201,11 +275,17 @@ def alter_min(
 
     if P1 is True:
         Q, _ = sp.linalg.qr(X, mode='economic')
-        P1 = np.identity(n) - Q @ Q.T
-        P1 = P1.astype(type_f)
+        # Store only the thin Q factor (n, d_X) instead of the full (n, n)
+        # projection matrix.  Memory: O(n*d_X) vs O(n^2).  For Adamson
+        # (n=29963, d_X=6) this saves ~7.2 GB.  The projection
+        # (I - Q @ Q.T) @ v is applied implicitly as v -= Q @ (Q.T @ v).
+        P1 = Q.astype(type_f)
             
     if a is None:
         a = d
+
+    # Compute gene sparsity before normalisation (zeros are preserved by /size_factor)
+    gene_sparsity = (Y == 0).mean(axis=0).astype(type_f)  # (p,)
 
     # initialization for Theta = A @ B^T    
     if A is None:
@@ -217,7 +297,10 @@ def alter_min(
         if u.shape[1]<r:
             raise ValueError(f'The number of latent factors is larger than the rank of deviance residuals ({u.shape[1]}). Try to decrease the value of r.')
         
-        A = np.c_[X, P1 @ u]
+        # Implicit projection: (I - Q @ Q.T) @ u = u - Q @ (Q.T @ u)
+        # P1 is now the thin Q factor (n, d_X), not the full (n, n) matrix.
+        u_proj = u - P1 @ (P1.T @ u) if P1 is not None else u
+        A = np.c_[X, u_proj]
     else:
         assert A.shape[1] == d+r
 
@@ -236,7 +319,8 @@ def alter_min(
 
     if P2 is not None:
         P2 = P2.astype(type_f)
-        B[:, d-a:d] = P2 @ B[:, d-a:d]
+        # Implicit projection: v -= Q @ (Q.T @ v) where P2 is the thin Q factor.
+        B[:, d-a:d] -= P2 @ (P2.T @ B[:, d-a:d])
     
 
     Y = Y.astype(type_f)
@@ -253,10 +337,42 @@ def alter_min(
     
     assert ~np.any(np.isnan(A))
     assert ~np.any(np.isnan(B))
-    
+
+    # ---- Convergence-mask parameters ----
+    tol_gene        = type_f(kwargs_ls['tol_gene'])
+    tol_cell        = type_f(kwargs_ls['tol_cell'])
+    recheck_interval= int(kwargs_ls['recheck_interval'])
+    sparsity_threshold = float(kwargs_ls['sparsity_threshold'])
+    sparsity_boost  = float(kwargs_ls['sparsity_boost'])
+    warmup_iters    = int(kwargs_ls['warmup_iters'])
+
+    # Per-gene initial step sizes — boosted for sparse genes (G3)
+    alpha_gene = np.full(p, kwargs_ls['alpha'], dtype=type_f)
+    sparse_mask = gene_sparsity > sparsity_threshold
+    if np.any(sparse_mask):
+        alpha_gene[sparse_mask] *= (
+            type_f(1.0) + type_f(sparsity_boost) * gene_sparsity[sparse_mask]
+        )
+
+    # Convergence masks (G1, G2)
+    gene_active = np.ones(p, dtype=np.bool_)
+    cell_active = np.ones(n, dtype=np.bool_)
+
     t = 0
     func_val_pre = (nll(Y, A, B, family, nuisance, Ys, thres_disp) + np.sum(np.abs(B[:,d-a:d]) * weights)) / p
     func_val = func_val_pre
+
+    # ---- Sparse-gene B-only warm-up (G6) ----
+    if warmup_iters > 0 and np.any(sparse_mask):
+        wu_gene_active = sparse_mask.astype(np.bool_)
+        wu_cell_active = np.zeros(n, dtype=np.bool_)  # skip A-step during warmup
+        for _ in range(warmup_iters):
+            _, A, B = update_with_mask(
+                Y, A, B, d, weights, P1, P2,
+                family, nuisance, Ys, thres_disp, a, C,
+                kwargs_ls['alpha'], kwargs_ls['beta'], kwargs_ls['max_iters'], kwargs_ls['tol'],
+                wu_gene_active, wu_cell_active, alpha_gene,
+            )
 
     kwargs_ls['alpha'] = kwargs_ls['alpha']
     if verbose:
@@ -264,13 +380,40 @@ def alter_min(
     pprint.pprint(f'Fitting GCATE (step {2 if P1 is None else 1})...')
     hist = [func_val_pre]
     es = Early_Stopping(**kwargs_es)
+    total_gene_updates = 0
+    total_cell_updates = 0
     with tqdm(np.arange(kwargs_es['max_iters']), disable=not verbose) as pbar:
         for t in pbar:
-            func_val, A, B = update(
+            # Save previous state for mask update (only when masking is active)
+            use_mask = tol_gene > 0 or tol_cell > 0
+            if use_mask:
+                B_prev = B.copy()
+                A_prev_latent = A[:, d:].copy()
+
+            func_val, A, B = update_with_mask(
                 Y, A, B, d, weights, P1, P2,
                 family, nuisance, Ys, thres_disp, a, C,
-                kwargs_ls['alpha'], kwargs_ls['beta'], kwargs_ls['max_iters'], kwargs_ls['tol'], 
+                kwargs_ls['alpha'], kwargs_ls['beta'], kwargs_ls['max_iters'], kwargs_ls['tol'],
+                gene_active, cell_active, alpha_gene,
             )
+
+            total_gene_updates += int(np.sum(gene_active))
+            total_cell_updates += int(np.sum(cell_active))
+
+            # Update convergence masks (G1, G2)
+            if use_mask:
+                if recheck_interval > 0 and (t + 1) % recheck_interval == 0:
+                    # Periodically reactivate all entities to catch non-monotone moves
+                    gene_active[:] = True
+                    cell_active[:] = True
+                else:
+                    if tol_gene > 0:
+                        delta_B_norm = np.linalg.norm(B - B_prev, axis=1)
+                        gene_active = delta_B_norm > tol_gene
+                    if tol_cell > 0:
+                        delta_A_norm = np.linalg.norm(A[:, d:] - A_prev_latent, axis=1)
+                        cell_active = delta_A_norm > tol_cell
+
             func_val = (func_val + np.sum(np.abs(B[:,d-a:d]) * weights)) / p
             hist.append(func_val)
             if not np.isfinite(func_val) or func_val>np.maximum(1e3*np.abs(func_val_pre),1e3):
@@ -286,7 +429,8 @@ def alter_min(
 
     kwargs_glm['disp_glm'] = nuisance[0]
     res = {'n_iter':t, 'func_val':func_val, 'resid':func_val_pre - func_val,
-           'hist':hist, 'kwargs_glm':kwargs_glm, 'kwargs_ls':kwargs_ls, 'kwargs_es':kwargs_es}
+           'hist':hist, 'kwargs_glm':kwargs_glm, 'kwargs_ls':kwargs_ls, 'kwargs_es':kwargs_es,
+           'total_gene_updates': total_gene_updates, 'total_cell_updates': total_cell_updates}
     res['X_U'] = A; res['B_Gamma'] = B; res['U'] = A[:,d:]
     return res
 

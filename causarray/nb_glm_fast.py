@@ -177,6 +177,7 @@ def fit_glm_fast(
     n_jobs: int = -3,
     random_state: int = 0,
     verbose: bool = False,
+    mem_limit_gb: float | None = None,
     **kwargs,
 ):
     """Fast batch NB-GLM fitting using crispyx's vectorized IRLS backend.
@@ -258,6 +259,7 @@ def fit_glm_fast(
         return _fit_glm_fast_per_perturbation(
             Y_float, X, A, a, d, p, n, family, disp_glm,
             impute, X_test, offset_arr, offsets, maxiter, verbose,
+            mem_limit_gb=mem_limit_gb,
         )
 
     B, Yhat, disp_glm_out, resid_deviance = _fit_glm_fast_single(
@@ -359,6 +361,7 @@ def _fit_glm_fast_single(
 def _fit_glm_fast_per_perturbation(
     Y_float, X, A, a, d, p, n, family, disp_glm,
     impute, X_test, offset_arr, offsets, maxiter, verbose,
+    mem_limit_gb=None,
 ):
     """Per-perturbation GLM fitting with global covariate model.
 
@@ -454,8 +457,21 @@ def _fit_glm_fast_per_perturbation(
         if offsets_test is not None:
             eta_0_test += offsets_test[:, None]
         Yhat_0_base = np.exp(np.clip(eta_0_test, -20, 20))  # (n_test, p)
-        Yhat_0 = np.zeros((n_test, p, a), dtype=np.float64)
-        Yhat_1 = np.zeros((n_test, p, a), dtype=np.float64)
+        # Choose dtype: switch to float32 when both imputation arrays would
+        # exceed mem_limit_gb GB (two arrays of shape n_test × p × a).
+        _impu_gb = n_test * p * a * 2 * 8 / 1e9
+        if mem_limit_gb is not None and _impu_gb > mem_limit_gb:
+            import warnings
+            warnings.warn(
+                f"Imputation arrays ({_impu_gb:.1f} GB as float64) exceed "
+                f"mem_limit_gb={mem_limit_gb} GB; using float32 to halve peak memory.",
+                ResourceWarning, stacklevel=4,
+            )
+            _impu_dtype: type = np.float32
+        else:
+            _impu_dtype = np.float64
+        Yhat_0 = np.zeros((n_test, p, a), dtype=_impu_dtype)
+        Yhat_1 = np.zeros((n_test, p, a), dtype=_impu_dtype)
 
     for k in range(a):
         pert_mask = A[:, k] == 1
