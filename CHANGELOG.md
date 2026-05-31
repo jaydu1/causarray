@@ -1,6 +1,44 @@
 # Changelog
 
-## [0.0.6]
+## [0.0.6] - 2026-05-31
+
+### Added
+
+- **Batch-wise fitting API** (`causarray/gcate.py`, `causarray/DR_learner.py`, `causarray/utils.py`)
+  - `fit_gcate_batch(Y, X, A, r, batch_size=10, max_cells=2000, n_ctrl=2000, ...)`:
+    Fits GCATE independently on batches of `batch_size` perturbations.  A fixed
+    subsample of `n_ctrl` control cells is shared across all batches, dispersion
+    is pre-estimated once on the control pool, and pert cells are capped at
+    `max_cells=2000` (ctrl added on top).  Accepts `skip_batches` to resume
+    interrupted runs.  Per-batch wall time and ETA reported when `verbose=True`.
+  - `gcate_lfc_batch(Y, X, A, r, batch_size=10, max_cells=2000, n_ctrl=2000,
+    cache_path=None, ...)`:
+    End-to-end batch pipeline — runs GCATE *and* LFC per batch, freeing all
+    large intermediate arrays (`res_1`, `res_2`, `Y_hat`, `pi_hat`) after each
+    batch.  `cache_path` enables HDF5 disk caching via `pandas.HDFStore`:
+    completed batches are written to disk and skipped on resume, so interrupted
+    runs continue from the last completed batch.  Returns a concatenated
+    DataFrame with a `'batch'` column.
+  - `LFC_batch(...)`: deprecated alias for `gcate_lfc_batch`; emits
+    `DeprecationWarning` and will be removed in a future release.
+  - `subsample_ctrl_cells(ctrl_idx, n_ctrl=2000, random_state=0)` and
+    `subsample_pert_cells(pert_idx, max_cells=2000, random_state=0)`:
+    Internal utilities for reproducible, per-batch cell subsampling.
+    `max_cells` caps pert cells only; ctrl cells are added on top.
+  - Both batch functions accept DataFrame `A` with named perturbation columns.
+  - Validated on Perturb-seq tutorial data: Spearman r(tau_batch, tau_full)
+    = 0.9677 with 1.26× speed-up over full fitting (88.1 s → 70.2 s).
+  - `n_batches` parameter for `fit_gcate_batch` and `gcate_lfc_batch`:
+    specifies total number of batches instead of per-batch count; overrides
+    `batch_size` when set. Batches are sized evenly with `numpy.array_split`
+    so the last batch is never more than 1 perturbation smaller than the
+    others, avoiding an unstable single-pert tail batch.
+  - `estimate_r(max_cells=N, random_state=0)`: new parameter that
+    automatically subsamples to at most `N` cells before running JIC
+    selection, prioritising control cells (all-zero rows of `A`). Filling
+    the ctrl budget first and then drawing remaining slots from treated cells
+    is equivalent to full-data estimation because confounding structure is
+    concentrated in the baseline transcriptome.
 
 ### Fixed
 

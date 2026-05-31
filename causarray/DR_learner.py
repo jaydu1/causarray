@@ -349,3 +349,247 @@ def VIM(eta_est, X, id_covs, **kwargs):
         'VIM_sd' : VIM_sd
     }
     return estimation
+
+
+def gcate_lfc_batch(
+    Y, X, A, r,
+    W_A=None,
+    batch_size=10,
+    n_batches=None,
+    max_cells=2000,
+    n_ctrl=2000,
+    family='nb',
+    offset=True,
+    warm_start_U=False,
+    cache_path=None,
+    random_state=0,
+    verbose=False,
+    gcate_kwargs=None,
+    lfc_kwargs=None,
+    **kwargs,
+):
+    """Batch-wise GCATE + doubly-robust LFC estimation.
+
+    Partitions perturbations into chunks of ``batch_size``, runs
+    :func:`fit_gcate_batch` to estimate per-batch latent confounders, then
+    calls :func:`LFC` on each batch independently.  All large intermediate
+    arrays (``res_1``, ``res_2``, ``Y_hat``, ``pi_hat``) are freed immediately
+    after each batch so that peak memory is bounded by one batch's worth of
+    data regardless of the total number of perturbations.
+
+    Results can optionally be cached to an HDF5 file (``cache_path``) so that
+    interrupted runs can be resumed without re-processing completed batches.
+
+    Parameters
+    ----------
+    Y : array-like or DataFrame, shape (n, p)
+        Count matrix.
+    X : array, shape (n, d)
+        Covariate matrix (intercept column should be included).
+    A : array-like or DataFrame, shape (n, a)
+        Binary treatment indicator matrix; control cells have all-zero rows.
+    r : int
+        Number of latent factors.
+    W_A : array or None, shape (n, d_A)
+        Propensity-score covariate matrix.  If ``None``, ``X`` is used.
+    batch_size : int
+        Perturbations per batch (default 10).  Ignored when ``n_batches`` is
+        set.  Batches are sized evenly with :func:`numpy.array_split` so the
+        last batch is never drastically smaller than the others.
+    n_batches : int or None
+        Total number of batches.  When set, overrides ``batch_size`` and
+        perturbations are split as evenly as possible across exactly
+        ``n_batches`` batches (e.g. ``n_batches=2`` on a 29-pert dataset
+        gives two batches of 15 and 14).
+    max_cells : int or None
+        Maximum **pert** cells per batch (default 2 000).  ``None`` means no
+        cap.  Ctrl cells are added on top so the actual batch size is at most
+        ``n_ctrl + max_cells``.  The cap is rarely active because typical
+        Perturb-seq datasets have only a few hundred cells per perturbation.
+    n_ctrl : int
+        Number of ctrl cells in the fixed subsample (default 2 000).
+    family : str
+        GLM family (default ``'nb'``).
+    offset : bool or array-like
+        Offset specification passed to :func:`fit_gcate_batch`.
+    warm_start_U : bool
+        Passed to :func:`fit_gcate_batch`.
+    cache_path : str or None
+        Path to an HDF5 file used for incremental caching.  When set:
+
+        - On entry, any already-computed batches are loaded from the store and
+          their indices are skipped by :func:`fit_gcate_batch`.
+        - After each new batch, the result DataFrame is appended to the store
+          under key ``/batch_{i:04d}``.
+        - On exit, all batches (cached + newly computed) are concatenated and
+          returned.
+
+        This lets you resume an interrupted run by re-calling the function
+        with the same ``cache_path`` — completed batches are not re-run.
+    random_state : int
+        RNG seed.
+    verbose : bool
+        Print per-batch timing.
+    gcate_kwargs : dict or None
+        Extra keyword arguments forwarded to :func:`fit_gcate_batch`
+        (and ultimately :func:`fit_gcate`).  E.g.::
+
+            gcate_kwargs=dict(backend='fast',
+                              kwargs_es_1=dict(max_iters=10, rel_tol=2e-4),
+                              kwargs_es_2=dict(max_iters=10, rel_tol=2e-4))
+
+    lfc_kwargs : dict or None
+        Extra keyword arguments forwarded to :func:`LFC`
+        (e.g. ``usevar``, ``fdx``, ``thres_min``).
+    **kwargs
+        Additional arguments forwarded to both :func:`fit_gcate_batch` and
+        :func:`LFC`.
+
+    Returns
+    -------
+    df_res : DataFrame
+        Concatenated result from all batches.  Includes a ``'batch'``
+        column with the 0-based batch index so batches can be identified.
+    """
+    import gc
+    from causarray.gcate import fit_gcate_batch
+
+    if gcate_kwargs is None:
+        gcate_kwargs = {}
+    if lfc_kwargs is None:
+        lfc_kwargs = {}
+
+    if isinstance(Y, pd.DataFrame):
+        Y_np = Y.values
+        gene_names = list(Y.columns)
+    else:
+        Y_np = np.asarray(Y)
+        gene_names = None  # will fall back to range(p) inside LFC
+    X_np = np.asarray(X)
+    W_A_np = np.asarray(W_A) if W_A is not None else None
+
+    if isinstance(A, pd.DataFrame):
+        A_np = A.values.astype(float)
+        pert_names_all = list(A.columns)
+    else:
+        A_np = np.asarray(A, dtype=float)
+        pert_names_all = list(range(A_np.shape[1]))
+
+    # ── Disk-cache: load already-completed batches ───────────────────────
+    cached_dfs = {}   # batch_i → DataFrame
+    skip_batches = set()
+    if cache_path is not None:
+        try:
+            with pd.HDFStore(cache_path, mode='r') as store:
+                for key in store.keys():
+                    # keys look like '/batch_0000'
+                    if key.startswith('/batch_'):
+                        try:
+                            idx = int(key.split('_')[1])
+                            cached_dfs[idx] = store[key]
+                            skip_batches.add(idx)
+                        except (ValueError, IndexError):
+                            pass
+        except (FileNotFoundError, OSError):
+            pass  # cache file doesn't exist yet — start fresh
+        if verbose and skip_batches:
+            print(f'[gcate_lfc_batch] Resuming: {len(skip_batches)} batches '
+                  f'already cached in {cache_path!r}')
+
+    # ── Run GCATE in batches ─────────────────────────────────────────────
+    # Pass original A so pert_names inside fit_gcate_batch match pert_col_map.
+    batch_results = fit_gcate_batch(
+        Y_np, X_np, A, r,
+        batch_size=batch_size,        n_batches=n_batches,        max_cells=max_cells,
+        n_ctrl=n_ctrl,
+        family=family,
+        offset=offset,
+        warm_start_U=warm_start_U,
+        skip_batches=skip_batches,
+        random_state=random_state,
+        verbose=verbose,
+        **{**gcate_kwargs, **kwargs},
+    )
+
+    # Build a column-name lookup once
+    if isinstance(A, pd.DataFrame):
+        pert_col_map = {name: i for i, name in enumerate(pert_names_all)}
+    else:
+        pert_col_map = {i: i for i in range(A_np.shape[1])}
+
+    new_dfs = {}
+    for batch_i, br in enumerate(batch_results):
+        # Skipped batches already have their DataFrame in cached_dfs
+        if br.get('skipped'):
+            continue
+
+        cell_idx = br['cell_idx']
+        chunk_pert_names = br['pert_names']
+        res_2 = br['res_2']
+
+        # Extract latent factors (copy needed — 'U' is a view of 'X_U')
+        U_b = res_2['U'].copy()
+        # Use offset already computed by fit_gcate (consistent with GCATE fitting)
+        offset_b = np.log(res_2['kwargs_glm']['size_factor'])
+
+        Y_b_np = Y_np[cell_idx]
+        # Preserve gene names so df_b['gene_names'] has the same type as df_full
+        Y_b = pd.DataFrame(Y_b_np, columns=gene_names) if gene_names is not None else Y_b_np
+        X_b = X_np[cell_idx]
+
+        # Recover pert columns for this batch
+        chunk_cols = [pert_col_map[name] for name in chunk_pert_names]
+        A_b = A_np[np.ix_(cell_idx, chunk_cols)]
+
+        W_b = np.c_[X_b, U_b]
+        if W_A_np is not None:
+            W_A_b = np.c_[W_A_np[cell_idx], U_b]
+        else:
+            W_A_b = W_b
+
+        A_df_b = pd.DataFrame(A_b, columns=chunk_pert_names)
+
+        df_b, estimation_b = LFC(
+            Y_b, W_b, A_df_b, W_A_b,
+            family=family,
+            offset=offset_b,
+            verbose=verbose,
+            **{**lfc_kwargs, **kwargs},
+        )
+        df_b['batch'] = batch_i
+        new_dfs[batch_i] = df_b
+
+        # ── Disk-cache: persist this batch ──────────────────────────────
+        if cache_path is not None:
+            with pd.HDFStore(cache_path, mode='a') as store:
+                store.put(f'batch_{batch_i:04d}', df_b, format='fixed')
+
+        # Free large intermediate arrays immediately (D6: no memory accumulation)
+        del estimation_b   # releases Y_hat and pi_hat
+        del U_b, Y_b, Y_b_np, X_b, A_b, W_b, W_A_b
+        br['res_1'] = None
+        br['res_2'] = None
+        gc.collect()
+
+    # Merge cached and newly computed batches, sorted by batch index
+    all_dfs = {**cached_dfs, **new_dfs}
+    return pd.concat(
+        [all_dfs[i] for i in sorted(all_dfs)], axis=0
+    ).reset_index(drop=True)
+
+
+def LFC_batch(*args, **kwargs):
+    """Deprecated alias for :func:`gcate_lfc_batch`.
+
+    .. deprecated::
+        Use ``gcate_lfc_batch`` instead.  ``LFC_batch`` will be removed in a
+        future release.
+    """
+    import warnings
+    warnings.warn(
+        "LFC_batch is deprecated and will be removed in a future release. "
+        "Use gcate_lfc_batch instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return gcate_lfc_batch(*args, **kwargs)

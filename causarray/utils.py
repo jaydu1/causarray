@@ -220,6 +220,64 @@ def comp_size_factor(counts, method='geomeans', lib_size=1e4, **kwargs):
 
 
 
+def subsample_ctrl_cells(ctrl_idx, n_ctrl=2000, random_state=0):
+    """Draw a fixed subsample of control cell indices.
+
+    Called once before the batch loop in ``fit_gcate_batch`` / ``LFC_batch``.
+    The same returned indices are reused for every batch so that all batches
+    see the same reference distribution and warm-started U rows map 1-to-1.
+
+    Parameters
+    ----------
+    ctrl_idx : array-like of int
+        Row indices of all control cells in the full dataset.
+    n_ctrl : int
+        Number of ctrl cells to select (default 2 000).  If the pool is
+        smaller, all are returned unchanged.
+    random_state : int
+        RNG seed for reproducibility.
+
+    Returns
+    -------
+    ctrl_sel : ndarray of int, shape (min(len(ctrl_idx), n_ctrl),)
+        Sorted ctrl cell indices.
+    """
+    ctrl_idx = np.asarray(ctrl_idx)
+    if len(ctrl_idx) <= n_ctrl:
+        return ctrl_idx
+    rng = np.random.default_rng(random_state)
+    return np.sort(rng.choice(ctrl_idx, size=n_ctrl, replace=False))
+
+
+def subsample_pert_cells(pert_idx, max_cells=2000, random_state=0):
+    """Subsample perturbation cells to at most *max_cells*.
+
+    The cap applies to pert cells only; ctrl cells are added on top by the
+    caller.  Typical Perturb-seq datasets have a few hundred cells per
+    perturbation, so the default cap of 2 000 is rarely active.
+
+    Parameters
+    ----------
+    pert_idx : array-like of int
+        Row indices of pert cells for this batch.
+    max_cells : int or None
+        Maximum number of pert cells to keep (default 2 000).  ``None`` keeps
+        all.
+    random_state : int
+        RNG seed for reproducibility.
+
+    Returns
+    -------
+    pert_sel : ndarray of int
+        Sorted pert cell indices (len ≤ max_cells).
+    """
+    pert_idx = np.asarray(pert_idx)
+    if max_cells is None or len(pert_idx) <= max_cells:
+        return pert_idx
+    rng = np.random.default_rng(random_state)
+    return np.sort(rng.choice(pert_idx, size=max_cells, replace=False))
+
+
 def plot_r(df_r, c=1):
     '''
     Plot the results of the estimation of the number of latent factors.
