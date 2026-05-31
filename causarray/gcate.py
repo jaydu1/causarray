@@ -55,47 +55,68 @@ def fit_gcate(Y, X, A, r, family='nb', disp_glm=None, disp_family=None, offset=T
     kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
     c1=None, backend: str = "auto", A_init=None, **kwargs
 ):
-    '''Fit the GCATE model.
+    """Fit the GCATE model to estimate unmeasured confounders.
+
+    Runs two-stage alternating minimization to jointly estimate latent
+    factor loadings ``U`` (n×r) and gene-level coefficients ``B``.  The
+    estimated latent factors should then be appended to the covariate matrix
+    before calling :func:`LFC`.
 
     Parameters
     ----------
     Y : array-like, shape (n, p)
-        The response variable.
+        Count matrix of outcomes.
     X : array-like, shape (n, d)
-        The covariate matrix.
+        Observed covariate matrix (intercept should be included).
     A : array-like, shape (n, a)
-        The treatment matrix.
+        Binary treatment indicator matrix.
     r : int
-        The number of unmeasured confounders.
+        Number of unmeasured confounders (latent factors) to estimate.
+        Use :func:`estimate_r` to select this value via the JIC criterion.
     family : str
-        The family of the GLM. Default is \'poisson\'.
-    disp_glm : array-like, shape (p, ) or None
-        The dispersion parameter for the negative binomial distribution.
-    offset : array-like, shape (p, ) or None
-        The offset parameter.
+        GLM family: ``'nb'`` (default, negative binomial) or ``'poisson'``.
+    disp_glm : array-like, shape (p,) or None
+        Dispersion parameters for the NB family.  Estimated automatically
+        when ``None`` and ``family='nb'``.
+    disp_family : str or None
+        Family used for internal dispersion estimation (default ``'poisson'``).
+    offset : bool or array-like
+        Log-scale offset.  ``True`` computes size factors automatically;
+        ``False`` or ``None`` disables the offset.
     kwargs_ls_1 : dict
-        Keyword arguments for the line search solver in the first phrase.
+        Keyword arguments for the line search solver in the first stage.
     kwargs_ls_2 : dict
-        Keyword arguments for the line search solver in the second phrase.
+        Keyword arguments for the line search solver in the second stage.
     kwargs_es_1 : dict
-        Keyword arguments for the early stopper in the first phrase.
+        Keyword arguments for the early stopper in the first stage.
     kwargs_es_2 : dict
-        Keyword arguments for the early stopper in the second phrase.
+        Keyword arguments for the early stopper in the second stage.
     c1 : float
-        The regularization constant in the first phrase. Default is 0.1.
+        Regularization constant for the first stage. Default is 0.05.
     backend : str
-        GLM backend to use: ``"auto"`` (default), ``"fast"`` (force crispyx),
-        or ``"original"`` (force statsmodels).  Not thread-safe.
+        GLM backend: ``"auto"`` (default), ``"fast"`` (force crispyx),
+        or ``"original"`` (force statsmodels).
     A_init : array-like, shape (n, d + a + r) or None
-        Optional warm-start for the first-stage augmented factor matrix
-        ``[X | A | U]`` passed to :func:`alter_min`.  When provided, the
-        SVD-based initialisation in :func:`alter_min` is skipped and the
-        supplied matrix seeds the first-stage iterations.  Used by
-        :func:`fit_gcate_batch` to warm-start ``U`` rows for control cells
-        across batches.
-    kwargs : dict
-        Additional keyword arguments.
-    '''
+        Optional warm-start matrix ``[X | A | U]`` for the first stage.
+        When provided, the SVD-based initialisation is skipped.
+    **kwargs
+        Additional keyword arguments forwarded to the GLM fitting functions.
+
+    Returns
+    -------
+    res_1 : dict
+        Results of the first optimization stage.
+    res_2 : dict
+        Results of the second optimization stage.  Key entries:
+
+        ``'X_U'`` : array, shape (n, d + a + r)
+            Augmented covariate matrix ``[X | A | U]``.
+        ``'B_Gamma'`` : array, shape (p, d + a + r)
+            Fitted gene-level coefficient matrix.
+
+        Pass ``res_2['U'] = res_2['X_U'][:, d+a:]`` as the latent factor
+        block when constructing ``W`` for :func:`LFC`.
+    """
 
     X = np.hstack((X, A))
     a = A.shape[1]
@@ -115,43 +136,39 @@ def fit_gcate(Y, X, A, r, family='nb', disp_glm=None, disp_family=None, offset=T
 def estimate(Y, X, r, a, lam1,
     kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2,
     A_init=None, **kwargs):
-    '''
-    Two-stage estimation of the GCATE model.
+    """Two-stage alternating minimization for the GCATE model (internal).
 
     Parameters
     ----------
     Y : array-like, shape (n, p)
         Response matrix.
     X : array-like, shape (n, d+a)
-        Observed covariate matrix.
+        Observed covariate matrix (covariates and treatments concatenated).
     r : int
         Number of latent variables.
     a : int
-        The number of columns to be regularized. Assume the last 'a' columns of the covariates are the regularized coefficients. If 'a' is None, it is set to be 'd' by default.
+        Number of treatment columns (last ``a`` columns of ``X``).
     lam1 : float
-        Regularization parameter for the first optimization problem.
+        Regularization parameter for the first stage.
     kwargs_glm : dict
-        Keyword arguments for the GLM.
+        GLM configuration (family, dispersion, size factors).
     kwargs_ls_1 : dict
-        Keyword arguments of the line search algorithm for the first optimization problem.
+        Line search arguments for the first stage.
     kwargs_ls_2 : dict
-        Keyword arguments of the line search algorithm for the second optimization problem.
+        Line search arguments for the second stage.
     kwargs_es_1 : dict
-        Keyword arguments of the early stopping monitor for the first optimization problem.
+        Early-stopping arguments for the first stage.
     kwargs_es_2 : dict
-        Keyword arguments of the early stopping monitor for the second optimization problem.
-    kwargs : dict
-        Additional keyword arguments.
+        Early-stopping arguments for the second stage.
 
     Returns
     -------
     res_1 : dict
-        The results of the first optimization problem.
+        First-stage optimisation results.
     res_2 : dict
-        The results of the second optimization problem, including 
-            'X_U': the matrix (n, d+a+r) for the covariate and updated latent factors.
-            'B_Gamma': the matrix (p, d+a+r) for the updated covariate and latent coefficients.
-    '''
+        Second-stage results with keys ``'X_U'`` (n, d+a+r) and
+        ``'B_Gamma'`` (p, d+a+r).
+    """
 
     p = Y.shape[1]
 
@@ -164,13 +181,6 @@ def estimate(Y, X, r, a, lam1,
         Y, r, X=X, P1=True, A=A_init,
         kwargs_glm=kwargs_glm, kwargs_ls=kwargs_ls_1, kwargs_es=kwargs_es_1, **valid_params)
     Q, _ = sp.linalg.qr(res_1['B_Gamma'][:,-r:], mode='economic')
-    # Store thin Q factor (p, r) instead of the dense (p, p) projection
-    # matrix.  For Adamson (p=14618, r=5) the shape change alone reclaims
-    # ~1.7 GB — the (p, p) form was the actual cost, not the dtype.  No
-    # ``.astype(np.float32)`` here because ``alter_min`` immediately
-    # recasts ``P2`` to ``type_f`` (float64), so a float32 round-trip
-    # would only allocate a transient extra ~0.3 MB without changing
-    # peak memory.
     P_Gamma = Q
 
     if lam1 == 0.:
@@ -189,8 +199,11 @@ def estimate_r(Y, X, A, r_max, c=1.,
     kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
     **kwargs
 ):
-    '''
-    Estimate the number of latent factors for the GCATE model.
+    """Estimate the number of latent factors for the GCATE model.
+
+    Fits GCATE for each candidate value in ``r_max`` and selects the number
+    of factors that minimises the JIC (joint information criterion), a
+    penalised-likelihood criterion analogous to BIC.
 
     Parameters
     ----------
@@ -224,19 +237,20 @@ def estimate_r(Y, X, A, r_max, c=1.,
     random_state : int
         RNG seed for subsampling (only used when ``max_cells`` is set).
     kwargs_ls_1 : dict
-        Keyword arguments of the line search algorithm for the first optimization problem.
+        Keyword arguments for the line search solver in the first stage.
     kwargs_ls_2 : dict
-        Keyword arguments of the line search algorithm for the second optimization problem.
+        Keyword arguments for the line search solver in the second stage.
     kwargs_es_1 : dict
-        Keyword arguments of the early stopping monitor for the first optimization problem.
+        Keyword arguments for the early stopper in the first stage.
     kwargs_es_2 : dict
-        Keyword arguments of the early stopping monitor for the second optimization problem.
+        Keyword arguments for the early stopper in the second stage.
 
     Returns
     -------
     df_r : DataFrame
-        Results of the number of latent factors.
-    '''
+        DataFrame with columns ``r``, ``deviance``, ``nu``, ``JIC``, sorted by
+        ``r``.  The optimal ``r`` minimises the ``JIC`` column.
+    """
     # ── Optional ctrl-priority subsampling ──────────────────────────────
     A_np = np.asarray(A) if not isinstance(A, pd.DataFrame) else A.values
     n_total = len(Y) if isinstance(Y, pd.DataFrame) else np.asarray(Y).shape[0]
@@ -245,15 +259,8 @@ def estimate_r(Y, X, A, r_max, c=1.,
         ctrl_mask = A_np.sum(axis=1) == 0
         ctrl_idx = np.where(ctrl_mask)[0]
         pert_idx  = np.where(~ctrl_mask)[0]
-        # Budget split with a treated-cell floor.  Reserving at least
-        # ``max_cells // 4`` slots for treated cells (or all of them if
-        # ``len(pert_idx) < max_cells // 4``) ensures that perturbation-
-        # induced latent variation is visible to the JIC even when the
-        # control pool would otherwise saturate the budget — previously,
-        # ``len(ctrl_idx) >= max_cells`` quietly left ``n_pert_use=0`` and
-        # ``r`` was under-estimated.  After reserving the floor, any
-        # remaining budget goes to controls; if controls are themselves
-        # scarce, leftover slots fall back to additional treated cells.
+        # Reserve at least max_cells//4 slots for treated cells so that
+        # perturbation-induced latent variation remains visible to the JIC.
         n_pert_floor = min(len(pert_idx), max(1, max_cells // 4))
         n_ctrl_use = min(len(ctrl_idx), max_cells - n_pert_floor)
         n_pert_use = min(len(pert_idx), max_cells - n_ctrl_use)
@@ -290,9 +297,6 @@ def estimate_r(Y, X, A, r_max, c=1.,
     if u.shape[1]<r_max:
         raise ValueError(f'The number of latent factors is larger than the rank of deviance residuals ({u.shape[1]}). Try to decrease the value of r.')
     Q, _ = sp.linalg.qr(X, mode='economic')
-    # Implicit projection: (I - Q @ Q.T) @ u = u - Q @ (Q.T @ u).
-    # Avoids materialising the dense (n, n) matrix — for Adamson scale
-    # (n ~ 30 000) this saves ~7 GB even when ``max_cells`` is not set.
     Q = Q.astype(type_f)
     u_proj = u - Q @ (Q.T @ u)
     A1 = np.c_[X, u_proj]
@@ -342,8 +346,7 @@ def fit_gcate_batch(
     Partitions the ``a`` perturbations into chunks of ``batch_size`` and for
     each chunk selects the fixed ctrl subsample plus (a subset of) the treated
     cells, capped at ``max_cells`` total.  Dispersion is pre-estimated **once**
-    on the ctrl cell pool so all batches share the same nuisance parameter
-    (mirrors crispyx's Stage-1 global-model strategy).
+    on the ctrl cell pool so all batches share the same nuisance parameters.
 
     Parameters
     ----------
@@ -492,7 +495,7 @@ def fit_gcate_batch(
     ctrl_idx_all = np.where(A_np.sum(axis=1) == 0)[0]
     ctrl_sel = subsample_ctrl_cells(ctrl_idx_all, n_ctrl=n_ctrl, random_state=random_state)
 
-    # ── Pre-estimate dispersion on ctrl cells (D1) ──────────────────────
+    # ── Pre-estimate dispersion on ctrl cells ───────────────────────────
     if family == 'nb' and disp_glm is None:
         if verbose:
             import pprint as _pprint
@@ -506,11 +509,6 @@ def fit_gcate_batch(
         disp_glm = _gcate_glm.estimate_disp_auto(
             Y_np[ctrl_sel], X_np[ctrl_sel], offset=offset_ctrl)
 
-    # ── Batch loop ───────────────────────────────────────────────────────
-    # Determine number of batches: n_batches overrides batch_size.
-    # np.array_split distributes the remainder evenly so the last batch is
-    # never drastically smaller than the others (avoids a single-pert tail
-    # batch that destabilises the propensity model).
     import math
     if n_batches is None:
         n_batches = math.ceil(a_total / batch_size)
@@ -567,11 +565,6 @@ def fit_gcate_batch(
         if 'disp_family' not in gcate_kw:
             gcate_kw['disp_family'] = 'poisson' if disp_glm is not None else disp_family
 
-        # Warm-start U for ctrl rows from previous batch.  The matrix is
-        # passed via fit_gcate's explicit ``A_init`` parameter so it lands on
-        # alter_min's top-level ``A`` argument; stuffing it into
-        # ``kwargs_ls_1`` would silently no-op because alter_min never reads
-        # ``kwargs_ls['A']``.
         if warm_start_U and U_ctrl_prev is not None:
             # Map ctrl_sel → local row indices in cell_idx
             ctrl_local = np.searchsorted(cell_idx, ctrl_sel)

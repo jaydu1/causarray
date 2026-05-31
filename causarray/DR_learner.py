@@ -11,60 +11,63 @@ from causarray.utils import reset_random_seeds, pprint, tqdm, comp_size_factor, 
 
 def compute_causal_estimand(
     estimand,
-    Y, W, A, W_A=None, family='nb', offset=False,    
+    Y, W, A, W_A=None, family='nb', offset=False,
     Y_hat=None, pi_hat=None, mask=None,
-    fdx=False, fdx_B=1000, fdx_alpha=0.05, fdx_c=0.1,     
+    fdx=False, fdx_B=1000, fdx_alpha=0.05, fdx_c=0.1,
     verbose=False, random_state=0, backend: str = "auto", **kwargs):
-    '''Estimate the log-fold changes of treatment effects (LFCs) using AIPW.
+    """Estimate causal treatment effects using AIPW with a user-supplied estimand.
 
     Parameters
     ----------
-    estimand : function
-        The causal estimand to estimate, it takes the estimated influence function values (eta_0, eta_1) 
-        of ATE as input and returns the estimated treatment effect and the estimated influence function (tau, eta).
-    Y : array
-        n x p matrix of outcomes.
-    W : array
-        n x d matrix of covariates.
-    A : array
-        n x 1 vector of treatments.
-    W_A : array, optional
-        n x d_A matrix of covariates for treatment. If None, W is used.
+    estimand : callable
+        Function that maps influence function values ``(etas, A)`` to
+        ``(eta_est, tau_est, var_est[, df_eff])``.  See :func:`LFC` for an
+        example implementation.
+    Y : array, shape (n, p)
+        Count matrix of outcomes.
+    W : array, shape (n, d)
+        Covariate matrix (including latent factors from GCATE).
+    A : array, shape (n, a)
+        Binary treatment indicator matrix.
+    W_A : array or None, shape (n, d_A)
+        Covariate matrix for the propensity model.  If ``None``, ``W`` is used.
     family : str
-        The distribution of the outcome. The default is \'poisson\'.
-    offset : array-like, optional
-        Offset for the model.
-
-    Y_hat : array, optional
-        Predicted outcomes under treatment of shape (n, p, a, 2).
-    pi_hat : array, optional
-        Predicted propensity scores of shape (n, a).
-    mask : array, optional
-        Boolean mask of shape (n, a) for the treatment, indicating which samples are used for 
-        the estimation of the estimand. This does not affect the estimation of pseudo-outcomes
-        and propensity scores.
-
+        GLM family for the outcome model: ``'nb'`` (default) or ``'poisson'``.
+    offset : bool or array-like
+        Log-scale offset for the outcome model.  ``True`` computes size factors
+        automatically; ``False`` or ``None`` disables the offset.
+    Y_hat : array or None, shape (n, p, a, 2)
+        Pre-computed counterfactual predictions.  When provided, cross-fitting
+        is skipped.
+    pi_hat : array or None, shape (n, a)
+        Pre-computed propensity scores.  When provided, propensity fitting is
+        skipped.
+    mask : array or None, shape (n, a)
+        Boolean mask indicating which cells are used for the final estimand
+        computation.  Does not affect cross-fitting or propensity estimation.
     fdx : bool
-        Whether to use FDX control, P(FDP > c) < alpha.
+        Whether to apply FDX control (``P(FDP > fdx_c) < fdx_alpha``).
     fdx_B : int
         Number of bootstrap samples for FDX control.
     fdx_alpha : float
-        The significance level for FDX control.
+        Significance level for FDX control.
     fdx_c : float
-        The augmentation parameter for FDX control.
+        FDP threshold for FDX control.
     backend : str
-        GLM backend to use: ``"auto"`` (default), ``"fast"`` (force crispyx),
-        or ``"original"`` (force statsmodels).  Not thread-safe.
+        GLM backend: ``"auto"`` (default), ``"fast"`` (force crispyx),
+        or ``"original"`` (force statsmodels).
     verbose : bool
-        Whether to print the model information.
-    **kwargs : dict
-        Additional arguments to pass to fit_glm.
-    
+        Print progress information.
+    **kwargs
+        Additional arguments forwarded to the GLM fitting functions.
+
     Returns
     -------
     df_res : DataFrame
-        Dataframe of test results.
-    '''
+        Test results with columns ``gene_names``, ``tau``, ``std``, ``stat``,
+        ``rej``, ``pvalue``, ``padj``, ``pvalue_emp_null_adj``,
+        ``padj_emp_null_adj`` (and ``trt`` when ``A`` has multiple columns).
+    """
     reset_random_seeds(random_state)
 
     ctx = _gcate_glm._backend_override(backend) if backend != "auto" else contextlib.nullcontext()
@@ -75,15 +78,8 @@ def compute_causal_estimand(
         Y = Y.values
     else:
         gene_names = range(Y.shape[1])
-    # Use float32 when Y_hat allocation would exceed mem_limit_gb.
-    # Y_hat = (n, p, a, 2) × 8 bytes; if that > mem_limit_gb we use float32
-    # for Y_hat (cross_fitting) AND Y here so that "Y - mu" in AIPW_mean
-    # stays float32, halving peak memory (~420 GB → ~210 GB for Adamson).
-    # Default ``mem_limit_gb=None`` means the float32 path is opt-in only —
-    # without explicit opt-in we keep float64 precision regardless of dataset
-    # size, mirroring ``cross_fitting``'s default and avoiding silent loss of
-    # precision on large workloads.  Pass ``mem_limit_gb=<GB>`` to LFC to
-    # enable the float32 fallback above that bound.
+    # When Y_hat (n×p×a×2 float64) would exceed mem_limit_gb, downcast to
+    # float32 to halve peak memory.  Opt-in only: pass ``mem_limit_gb=<GB>``.
     _a_shape = A.shape[1] if hasattr(A, 'shape') and len(A.shape) > 1 else 1
     _yhat_gb = Y.shape[0] * Y.shape[1] * _a_shape * 2 * 8 / 1e9
     _mem_limit = kwargs.get('mem_limit_gb', None)
@@ -146,10 +142,6 @@ def compute_causal_estimand(
     pi_hat = pi_hat.reshape(*A.shape)
 
     if verbose: pprint.pprint('Estimating AIPW mean...')
-    # Match A and pi_hat dtype to Y/Y_hat so that AIPW's (n,p,a,2) ``pseudo_y``
-    # stays in the float32 regime when the user opted into it.  Without this,
-    # numpy upcasts ``weight*(Y-mu)+mu`` back to float64 and silently negates
-    # the memory saving (Finding 7).
     _aipw_dtype = Y_hat.dtype if _use_f32 else None
     A_aipw     = A.astype(_aipw_dtype) if _aipw_dtype is not None else A
     pi_hat_aipw = pi_hat.astype(_aipw_dtype) if _aipw_dtype is not None else pi_hat
@@ -204,82 +196,87 @@ def compute_causal_estimand(
 
 
 def LFC(
-    Y, W, A, W_A=None, family='nb', offset=False,    
-    Y_hat=None, pi_hat=None, cross_est=False,  mask=None, usevar='unequal',
+    Y, W, A, W_A=None, family='nb', offset=False,
+    Y_hat=None, pi_hat=None, cross_est=False, mask=None, usevar='unequal',
     thres_min=1e-2, thres_diff=1e-2, eps_var=1e-4,
-    fdx=False, fdx_alpha=0.05, fdx_c=0.1,     
+    fdx=False, fdx_alpha=0.05, fdx_c=0.1,
     verbose=False, backend: str = "auto", **kwargs):
-    '''
-    Estimate the log-fold chanegs of treatment effects (LFCs) using AIPW.
+    """Estimate log-fold changes of treatment effects (LFCs) using AIPW.
+
+    Fits a doubly-robust AIPW estimator for the log-ratio of counterfactual
+    means E[Y(1)] / E[Y(0)].  Call this after :func:`fit_gcate` to incorporate
+    estimated latent factors into the covariate matrix ``W``.
 
     Parameters
     ----------
-    Y : array
-        n x p matrix of outcomes.
-    W : array
-        n x d matrix of covariates.
-    A : array
-        n x 1 vector of treatments.
-    W_A : array, optional
-        n x d_A matrix of covariates for treatment. If None, W is used.
+    Y : array, shape (n, p)
+        Count matrix of outcomes.
+    W : array, shape (n, d)
+        Covariate matrix, typically ``[X | U]`` where ``U`` are the latent
+        factors from GCATE.
+    A : array, shape (n, a)
+        Binary treatment indicator matrix.
+    W_A : array or None, shape (n, d_A)
+        Covariate matrix for the propensity model.  If ``None``, ``W`` is used.
     family : str
-        The distribution of the outcome. The default is 'poisson'.
-    offset : array-like, optional
-        Offset for the model.
-
-    Y_hat : array, optional
-        Predicted outcomes under treatment of shape (n, p, a, 2).
-    pi_hat : array, optional
-        Predicted propensity scores of shape (n, a).
+        GLM family for the outcome model: ``'nb'`` (default) or ``'poisson'``.
+    offset : bool or array-like
+        Log-scale offset for the outcome model.  ``True`` computes size factors
+        automatically; ``False`` or ``None`` disables the offset.
+    Y_hat : array or None, shape (n, p, a, 2)
+        Pre-computed counterfactual predictions.  When provided, cross-fitting
+        is skipped.
+    pi_hat : array or None, shape (n, a)
+        Pre-computed propensity scores.  When provided, propensity fitting is
+        skipped.
     cross_est : bool
-        Whether to use cross-estimation.
-    mask : array, optional
-        Boolean mask of shape (n, a) for the treatment, indicating which samples are used for
-        the estimation of the estimand. This does not affect the estimation of pseudo-outcomes
-        and propensity scores.
+        Whether to use cross-estimation for nuisance parameters.
+    mask : array or None, shape (n, a)
+        Boolean mask indicating which cells are used for the final estimand
+        computation.  Does not affect cross-fitting or propensity estimation.
     usevar : str
         Variance estimator for the AIPW pseudo-outcomes:
 
         * ``'unequal'`` (default, v0.0.6+): Welch variance
           ``s₀²/n₀ + s₁²/n₁`` with Welch-Satterthwaite degrees of
           freedom; p-values use the t-distribution.
-        * ``'pooled'``: pooled-variance estimator
-          ``(s² + eps_var) / n``.
+        * ``'pooled'``: pooled-variance estimator ``(s² + eps_var) / n``.
 
         .. versionchanged:: 0.0.6
-            Default flipped from ``'pooled'`` → ``'unequal'``.  The
-            ``'unequal'`` formula was also corrected from a "half-Welch"
+            Default changed from ``'pooled'`` to ``'unequal'``.  The
+            ``'unequal'`` formula was also corrected from
             ``(s₀²/n₀ + s₁²/n₁)/2`` to the standard Welch form, which
             shrinks t-statistics by ≈ √2 relative to v0.0.5.  Pass
             ``usevar='pooled'`` to recover pre-v0.0.6 behaviour.
     thres_min : float
-        The minimum threshold for the treatment effect.
+        Genes whose maximum counterfactual mean is below this threshold are
+        excluded (reported as ``tau=0``, ``padj=NaN``).
     thres_diff : float
-        The minimum threshold for the difference in treatment effect.
+        Genes whose counterfactual means differ by less than this value are
+        excluded.
     eps_var : float
-        The minimum threshold for the variance of treatment.
-
+        Small constant added to per-arm variances to prevent division by zero.
     fdx : bool
-        Whether to use FDX control, P(FDP > c) < alpha.
+        Whether to apply FDX control (``P(FDP > fdx_c) < fdx_alpha``).
     fdx_alpha : float
-        The significance level for FDX control.
+        Significance level for FDX control.
     fdx_c : float
-        The augmentation parameter for FDX control.
-    
+        FDP threshold for FDX control.
     verbose : bool
-        Whether to print the model information.
+        Print progress information.
     backend : str
         GLM backend: ``"auto"`` (default), ``"fast"`` (force crispyx),
-        ``"original"`` (force statsmodels). Passed to
-        ``compute_causal_estimand``.
-    kwargs : dict
-        Additional arguments to pass to fit_glm.
-    
+        or ``"original"`` (force statsmodels).
+    **kwargs
+        Additional arguments forwarded to the GLM fitting functions.
+
     Returns
     -------
     df_res : DataFrame
-        Dataframe of test results.
-    '''
+        Test results with columns ``gene_names``, ``tau``, ``std``, ``stat``,
+        ``rej``, ``pvalue``, ``padj``, ``pvalue_emp_null_adj``,
+        ``padj_emp_null_adj`` (and ``trt`` when ``A`` has multiple columns).
+    """
 
     def estimand(etas, A, **kwargs):
         eta_0, eta_1 = etas[..., 0], etas[..., 1]
@@ -354,14 +351,38 @@ def LFC(
 
 
 def VIM(eta_est, X, id_covs, **kwargs):
-    '''
-    Estimate the variable importance measure (VIM) using AIPW.
+    """Estimate variable importance measures (VIM) for heterogeneous treatment effects.
+
+    Decomposes treatment effect variance into components explained by each
+    covariate using conditional average treatment effect (CATE) regression.
 
     Parameters
     ----------
-    eta_est : array
-        n x p matrix of influence function values.
-    '''
+    eta_est : array, shape (n, p)
+        Influence function values from :func:`LFC` or
+        :func:`compute_causal_estimand`.
+    X : array, shape (n, d)
+        Covariate matrix.
+    id_covs : int or array-like of int
+        Column indices of ``X`` to compute VIM for.  An integer ``k`` is
+        treated as ``range(k)``.
+
+    Returns
+    -------
+    estimation : dict
+        Dictionary with keys:
+
+        ``'CATE'``, ``'CATE_lower'``, ``'CATE_upper'`` : array, shape (n_covs, n, p)
+            Conditional average treatment effect and pointwise confidence band.
+        ``'VTE'`` : array, shape (p,)
+            Total variance of the treatment effect (marginal).
+        ``'CVTE'`` : array, shape (n_covs, p)
+            Conditional variance of the treatment effect given each covariate.
+        ``'VIM_mean'`` : array, shape (n_covs, p)
+            VIM point estimate ``CVTE / VTE - 1`` for each covariate and gene.
+        ``'VIM_sd'`` : array, shape (n_covs, p)
+            Standard deviation of the VIM estimate.
+    """
     if len(X.shape)==1:
         X = X[:,None]
 
@@ -526,9 +547,6 @@ def gcate_lfc_batch(
     if lfc_kwargs is None:
         lfc_kwargs = {}
 
-    # Sparse Y is densified up front (with the standard ResourceWarning) so
-    # downstream NumPy slicing works the same way as for dense / DataFrame
-    # inputs.  See Finding 10 in the review.
     import scipy.sparse as _sp
     from causarray.nb_glm_fast import _maybe_densify
     if _sp.issparse(Y):
@@ -551,15 +569,6 @@ def gcate_lfc_batch(
         pert_names_all = list(range(A_np.shape[1]))
 
     # ── Disk-cache: identify cached batches and validate schema ─────────
-    # Only the HDF5 keys are read here.  The cached DataFrames themselves
-    # are loaded lazily inside the final concat step so peak memory stays
-    # bounded by ``max(n_cached_batch_size, current_batch_size)`` instead
-    # of ``Σ cached_batch_size`` — important when ``a`` is in the hundreds.
-    # On first write below we record a ``/meta`` row tagged with the
-    # causarray version, GLM family, perturbation count, and the LFC
-    # output-column tuple; on resume we refuse to mix incompatible
-    # schemas to avoid silently producing NaN-filled rows in the
-    # concatenated result.
     from causarray.__about__ import __version__ as _causarray_version
     cached_keys = {}  # batch_i → "/batch_NNNN" hdf5 key
     cache_meta_existing = None
@@ -602,11 +611,9 @@ def gcate_lfc_batch(
                   f'already cached in {cache_path!r}')
 
     # ── Run GCATE in batches ─────────────────────────────────────────────
-    # Pass original A so pert_names inside fit_gcate_batch match pert_col_map.
-    # Precedence: explicit ``gcate_kwargs`` wins over the generic ``**kwargs``
-    # so a user can scope a kwarg to GCATE only (e.g.
-    # ``gcate_kwargs=dict(backend='fast')`` together with a top-level
-    # ``backend='original'`` intended for LFC).  See Finding 9 in the review.
+    # Explicit ``gcate_kwargs`` wins over the generic ``**kwargs`` so a kwarg
+    # can be scoped to one stage (e.g. ``gcate_kwargs=dict(backend='fast')``
+    # with a top-level ``backend='original'`` targeting LFC only).
     batch_results = fit_gcate_batch(
         Y_np, X_np, A, r,
         batch_size=batch_size,        n_batches=n_batches,        max_cells=max_cells,
@@ -663,21 +670,13 @@ def gcate_lfc_batch(
             family=family,
             offset=offset_b,
             verbose=verbose,
-            # Precedence: explicit ``lfc_kwargs`` wins over the generic
-            # ``**kwargs`` for the same reason as the GCATE call above —
-            # see Finding 9 in the review.
             **{**kwargs, **lfc_kwargs},
         )
         df_b['batch'] = batch_i
         new_dfs[batch_i] = df_b
 
-        # ── Disk-cache: persist this batch (and the schema /meta row) ──
         if cache_path is not None:
             with pd.HDFStore(cache_path, mode='a') as store:
-                # Write the schema-version /meta record the first time we
-                # touch the store.  Validating this on resume catches
-                # cross-version / cross-config cache reuse before NaN
-                # contamination can sneak into the concat.
                 if '/meta' not in store.keys():
                     _meta = pd.DataFrame({
                         'causarray_version': [_causarray_version],
@@ -688,17 +687,12 @@ def gcate_lfc_batch(
                     store.put('/meta', _meta, format='fixed')
                 store.put(f'batch_{batch_i:04d}', df_b, format='fixed')
 
-        # Free large intermediate arrays immediately (D6: no memory accumulation)
         del estimation_b   # releases Y_hat and pi_hat
         del U_b, Y_b, Y_b_np, X_b, A_b, W_b, W_A_b
         br['res_1'] = None
         br['res_2'] = None
         gc.collect()
 
-    # Merge cached and newly computed batches lazily: open the HDFStore
-    # once, stream each cached frame at concat time, and close the store
-    # immediately afterwards.  Peak memory now scales with one batch
-    # rather than ``Σ cached_batch_size`` (Finding 18).
     new_indices = set(new_dfs)
     cached_indices = set(cached_keys)
     all_indices = sorted(new_indices | cached_indices)

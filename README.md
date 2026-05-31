@@ -44,7 +44,7 @@ from causarray import gcate_lfc_batch
 
 df_res = gcate_lfc_batch(
     Y, X, A, r,
-    batch_size=10,    # perturbations per batch
+    batch_size=10,    # perturbations per batch (or use n_batches= for a fixed count)
     max_cells=2000,   # max pert cells per batch (ctrl added on top)
     n_ctrl=2000,      # fixed ctrl subsample shared across batches
     cache_path='results.h5',   # resume if interrupted
@@ -55,13 +55,13 @@ df_res = gcate_lfc_batch(
 See the [Replogle-E-K562 tutorial](https://causarray.readthedocs.io/en/latest/)
 for a demonstration on 200 perturbations from a genome-wide CRISPRi screen.
 
-## Logs
+## Changelog
 
 - [x] (2025-01-30) Python package released on PyPI
-- [x] (2025-02-01) code for reproducing figures in paper
+- [x] (2025-02-01) Code for reproducing figures in paper
 - [x] (2025-02-02) Tutorial for Python and R
 - [x] (2026-05-31) Batch fitting API (`gcate_lfc_batch`) for large-scale screens
-- [ ] Documentation
+- [x] (2026-05-31) Documentation at [causarray.readthedocs.io](https://causarray.readthedocs.io/en/latest/)
 
 
 <!-- 
