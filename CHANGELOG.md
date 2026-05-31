@@ -72,6 +72,29 @@
 
 ### Changed
 
+- **⚠️ `alter_min()` early-stopping defaults** (`gcate_opt.py`):
+  - Default `kwargs_es['max_iters']` reduced from 500 → 50.
+  - Default `tolerance` reduced from `1e-3` → `0.0` and a new scale-
+    invariant `rel_tol=2e-4` introduced.  In practice the relative
+    threshold plus `patience=5` reaches the same fixed point as the
+    old absolute threshold within ≤ 50 iterations on every tested
+    dataset, but external benchmarks that relied on the 500-iteration
+    upper bound should pass `kwargs_es_1=dict(max_iters=500)` and
+    `kwargs_es_2=dict(max_iters=500)` to recover the pre-v0.0.6 budget.
+
+- **⚠️ BREAKING — `LFC()` variance and default `usevar`** (`DR_learner.py`):
+  - Default `usevar` changed from `'pooled'` to `'unequal'` (Welch). Callers
+    not specifying `usevar=` will see Welch t-statistics instead of pooled
+    ones; revert with `LFC(..., usevar='pooled')` if reproducing pre-v0.0.6
+    results is required.
+  - **`'unequal'` formula corrected**: the variance is now
+    `var = s₀²/n₀ + s₁²/n₁` (standard Welch); previously it was
+    `(s₀²/n₀ + s₁²/n₁)/2`, a "half-Welch" that under-estimated the
+    standard error by √2.  Test statistics are therefore ~√2× smaller
+    than pre-v0.0.6 for explicit `usevar='unequal'` callers.
+  - p-values now use the t-distribution with Welch-Satterthwaite degrees
+    of freedom (per gene); the prior version used a Normal approximation.
+
 - **`gcate_opt.py`**: `alter_min()` initialization now calls `fit_glm_auto()` instead of `fit_glm()`.
 - **`gcate.py`**: `_check_input()` now calls `estimate_disp_auto()` instead of `estimate_disp()`; `estimate_r()` now calls `fit_glm_auto()`.
 - **`DR_estimation.py`**: `cross_fitting()` now calls `fit_glm_auto()`, enabling the per-perturbation fast path for multi-treatment LFC estimation.

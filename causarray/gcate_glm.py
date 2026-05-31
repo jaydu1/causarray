@@ -40,6 +40,15 @@ Raised from 30→50 so that GCATE's B-initialisation (d_eff = d+a+r, up to ~35
 on typical datasets) uses the fast crispyx path instead of statsmodels.
 """
 
+_FAST_MAX_COEF: float = 1e4
+"""Maximum |coefficient| accepted from the crispyx fast path.
+
+Column preconditioning eliminates the ~5× blow-up observed before v0.0.6,
+so we keep only an extreme-magnitude trip-wire (default 1e4 — orders of
+magnitude beyond any legitimate latent-factor coefficient).  Fits exceeding
+this bound fall back to statsmodels.
+"""
+
 
 @contextlib.contextmanager
 def _backend_override(backend: str):
@@ -84,7 +93,7 @@ def init_inv_link(Y, family, disp):
 
 
 def fit_glm(Y, X, A=None, family='gaussian', disp_family='poisson',
-    disp_glm=None, impute=False, offset=None, shrinkage=False,
+    disp_glm=None, impute=False, offset=None, offset_test=None, shrinkage=False,
     alpha=1e-4, maxiter=1000, thres_disp=100., n_jobs=-3, random_state=0, verbose=False,
     mem_limit_gb=None, **kwargs):
     '''
@@ -237,11 +246,29 @@ def fit_glm(Y, X, A=None, family='gaussian', disp_family='poisson',
     Yhat_1 = np.array(Yhat_1).transpose(1, 0, 2)
     resid_deviance = np.array(resid_deviance).T
 
-    if impute is not False:        
+    # Match the fast path: when ``mem_limit_gb`` is set and the aggregated
+    # imputation tensors would exceed the bound, downcast Yhat_0/Yhat_1 to
+    # float32.  Peak memory still hits the float64 allocation produced by
+    # the parallel ``fit_model`` calls (each worker materialises an
+    # ``(n, a)`` slice), but the returned arrays are float32 so downstream
+    # ``cross_fitting`` / ``AIPW_mean`` stay within budget.
+    if mem_limit_gb is not None and impute is not False:
+        _yhat_gb = (Yhat_0.size + Yhat_1.size) * 8 / 1e9
+        if _yhat_gb > mem_limit_gb:
+            warnings.warn(
+                f"Imputation arrays ({_yhat_gb:.1f} GB as float64) exceed "
+                f"mem_limit_gb={mem_limit_gb} GB; downcasting to float32 to "
+                f"halve memory footprint of the returned Y_hat.",
+                ResourceWarning, stacklevel=2,
+            )
+            Yhat_0 = Yhat_0.astype(np.float32)
+            Yhat_1 = Yhat_1.astype(np.float32)
+
+    if impute is not False:
         Yhat = (Yhat_0, Yhat_1)
     else:
         Yhat = np.array(Yhat_0)[:,:,0]
-    
+
     return B, Yhat, disp_glm, offsets, resid_deviance
 
 
@@ -336,7 +363,7 @@ def ls_fit(Y, X, n_jobs=-3, **kwargs):
 
 
 def fit_glm_auto(Y, X, A=None, family='gaussian', disp_family='poisson',
-    disp_glm=None, impute=False, offset=None, shrinkage=False,
+    disp_glm=None, impute=False, offset=None, offset_test=None, shrinkage=False,
     alpha=1e-4, maxiter=1000, thres_disp=100., n_jobs=-3, random_state=0,
     verbose=False, mem_limit_gb=None, **kwargs):
     """Fit GLM using crispyx's fast backend when available, falling back to statsmodels.
@@ -363,10 +390,11 @@ def fit_glm_auto(Y, X, A=None, family='gaussian', disp_family='poisson',
     if not _USE_FAST_BACKEND:
         return fit_glm(
             Y, X, A=A, family=family, disp_family=disp_family,
-            disp_glm=disp_glm, impute=impute, offset=offset,
+            disp_glm=disp_glm, impute=impute, offset=offset, offset_test=offset_test,
             shrinkage=shrinkage, alpha=alpha, maxiter=maxiter,
             thres_disp=thres_disp, n_jobs=n_jobs,
-            random_state=random_state, verbose=verbose, **kwargs,
+            random_state=random_state, verbose=verbose,
+            mem_limit_gb=mem_limit_gb, **kwargs,
         )
 
     n, p = Y.shape
@@ -386,32 +414,46 @@ def fit_glm_auto(Y, X, A=None, family='gaussian', disp_family='poisson',
         try:
             result = fit_glm_fast(
                 Y, X, A=A, family=family, disp_family=disp_family,
-                disp_glm=disp_glm, impute=impute, offset=offset,
+                disp_glm=disp_glm, impute=impute, offset=offset, offset_test=offset_test,
                 shrinkage=shrinkage, alpha=alpha, maxiter=maxiter,
                 thres_disp=thres_disp, n_jobs=n_jobs,
-                random_state=random_state, verbose=verbose, **kwargs,
+                random_state=random_state, verbose=verbose,
+                mem_limit_gb=mem_limit_gb, **kwargs,
             )
         except ImportError:
             pass  # crispyx import failed at call time; fall through to statsmodels
         else:
-            # Sanity check: crispyx IRLS should produce finite coefficients.
-            # Column preconditioning in _fit_glm_fast_single eliminates the
-            # ill-conditioning that previously caused ~5× coefficient blow-up
-            # vs statsmodels.  We now only guard against NaN/inf outputs;
-            # an absolute-magnitude threshold would fire spuriously on
-            # latent-factor designs where large unscaled coefs are expected.
+            # Sanity check: crispyx IRLS should produce finite, well-bounded
+            # coefficients.  Column preconditioning in _fit_glm_fast_single
+            # eliminates the ill-conditioning that previously caused ~5×
+            # coefficient blow-up vs statsmodels, so a tight 50/10 threshold
+            # would fire spuriously on latent-factor designs where unscaled
+            # coefs can legitimately be larger.  Keep only an extreme-
+            # magnitude trip-wire (`max|B| > _FAST_MAX_COEF`) so that
+            # pathological divergence (e.g. near-rank-deficient designs that
+            # slip past preconditioning) still falls back to statsmodels.
             B = result[0]
-            coef_ok = np.all(np.isfinite(B))
+            finite_ok = bool(np.all(np.isfinite(B)))
+            max_abs = float(np.max(np.abs(B))) if finite_ok else float('inf')
+            coef_ok = finite_ok and max_abs <= _FAST_MAX_COEF
             if coef_ok:
                 return result
             if verbose:
-                pprint.pprint('Fast GLM diverged, falling back to statsmodels...')
+                if not finite_ok:
+                    pprint.pprint('Fast GLM diverged (NaN/inf), falling back to statsmodels...')
+                else:
+                    pprint.pprint(
+                        f'Fast GLM coefficients exceed bound '
+                        f'(max|B|={max_abs:.2e} > {_FAST_MAX_COEF:.0e}); '
+                        f'falling back to statsmodels...'
+                    )
     return fit_glm(
         Y, X, A=A, family=family, disp_family=disp_family,
-        disp_glm=disp_glm, impute=impute, offset=offset,
+        disp_glm=disp_glm, impute=impute, offset=offset, offset_test=offset_test,
         shrinkage=shrinkage, alpha=alpha, maxiter=maxiter,
         thres_disp=thres_disp, n_jobs=n_jobs,
-        random_state=random_state, verbose=verbose, **kwargs,
+        random_state=random_state, verbose=verbose,
+        mem_limit_gb=mem_limit_gb, **kwargs,
     )
 
 

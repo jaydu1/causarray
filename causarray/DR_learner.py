@@ -79,10 +79,23 @@ def compute_causal_estimand(
     # Y_hat = (n, p, a, 2) × 8 bytes; if that > mem_limit_gb we use float32
     # for Y_hat (cross_fitting) AND Y here so that "Y - mu" in AIPW_mean
     # stays float32, halving peak memory (~420 GB → ~210 GB for Adamson).
+    # Default ``mem_limit_gb=None`` means the float32 path is opt-in only —
+    # without explicit opt-in we keep float64 precision regardless of dataset
+    # size, mirroring ``cross_fitting``'s default and avoiding silent loss of
+    # precision on large workloads.  Pass ``mem_limit_gb=<GB>`` to LFC to
+    # enable the float32 fallback above that bound.
     _a_shape = A.shape[1] if hasattr(A, 'shape') and len(A.shape) > 1 else 1
     _yhat_gb = Y.shape[0] * Y.shape[1] * _a_shape * 2 * 8 / 1e9
-    _mem_limit = kwargs.get('mem_limit_gb', 64)
-    _use_f32 = _yhat_gb > _mem_limit
+    _mem_limit = kwargs.get('mem_limit_gb', None)
+    _use_f32 = _mem_limit is not None and _yhat_gb > _mem_limit
+    if _use_f32:
+        import warnings
+        warnings.warn(
+            f"AIPW intermediate Y ({_yhat_gb:.1f} GB as float64) exceeds "
+            f"mem_limit_gb={_mem_limit} GB; downcasting Y, A, and pi_hat to "
+            f"float32 to halve peak memory.",
+            ResourceWarning, stacklevel=2,
+        )
     Y = Y.astype(np.float32 if _use_f32 else float)
     n, p = Y.shape
 
@@ -128,14 +141,22 @@ def compute_causal_estimand(
         size_factors = np.ones(n)
     
     with ctx:
-        Y_hat, pi_hat = cross_fitting(Y, A, W, W_A, family=family, offset=offset, 
+        Y_hat, pi_hat = cross_fitting(Y, A, W, W_A, family=family, offset=offset,
             Y_hat=Y_hat, pi_hat=pi_hat, mask=mask, random_state=random_state, verbose=verbose, **kwargs)
     pi_hat = pi_hat.reshape(*A.shape)
 
     if verbose: pprint.pprint('Estimating AIPW mean...')
+    # Match A and pi_hat dtype to Y/Y_hat so that AIPW's (n,p,a,2) ``pseudo_y``
+    # stays in the float32 regime when the user opted into it.  Without this,
+    # numpy upcasts ``weight*(Y-mu)+mu`` back to float64 and silently negates
+    # the memory saving (Finding 7).
+    _aipw_dtype = Y_hat.dtype if _use_f32 else None
+    A_aipw     = A.astype(_aipw_dtype) if _aipw_dtype is not None else A
+    pi_hat_aipw = pi_hat.astype(_aipw_dtype) if _aipw_dtype is not None else pi_hat
+
     # point estimation of the treatment effect
-    _, etas = AIPW_mean(Y, np.stack([1-A, A], axis=-1), 
-        Y_hat, np.stack([1-pi_hat, pi_hat], axis=-1), positive=True)
+    _, etas = AIPW_mean(Y, np.stack([1-A_aipw, A_aipw], axis=-1),
+        Y_hat, np.stack([1-pi_hat_aipw, pi_hat_aipw], axis=-1), positive=True)
 
     # normalize the influence function values
     etas /= size_factors[:,None,None,None]
@@ -213,10 +234,24 @@ def LFC(
     cross_est : bool
         Whether to use cross-estimation.
     mask : array, optional
-        Boolean mask of shape (n, a) for the treatment, indicating which samples are used for 
+        Boolean mask of shape (n, a) for the treatment, indicating which samples are used for
         the estimation of the estimand. This does not affect the estimation of pseudo-outcomes
         and propensity scores.
-    
+    usevar : str
+        Variance estimator for the AIPW pseudo-outcomes:
+
+        * ``'unequal'`` (default, v0.0.6+): Welch variance
+          ``s₀²/n₀ + s₁²/n₁`` with Welch-Satterthwaite degrees of
+          freedom; p-values use the t-distribution.
+        * ``'pooled'``: pooled-variance estimator
+          ``(s² + eps_var) / n``.
+
+        .. versionchanged:: 0.0.6
+            Default flipped from ``'pooled'`` → ``'unequal'``.  The
+            ``'unequal'`` formula was also corrected from a "half-Welch"
+            ``(s₀²/n₀ + s₁²/n₁)/2`` to the standard Welch form, which
+            shrinks t-statistics by ≈ √2 relative to v0.0.5.  Pass
+            ``usevar='pooled'`` to recover pre-v0.0.6 behaviour.
     thres_min : float
         The minimum threshold for the treatment effect.
     thres_diff : float
@@ -260,15 +295,27 @@ def LFC(
             var_est = (np.var(eta_est, axis=0, ddof=1) + eps_var) / eta_est.shape[0]
         elif usevar == 'unequal':
             # Welch variance: SE² = s₀²/n₀ + s₁²/n₁
-            var_0 = np.var(eta_est[A==0], axis=0, ddof=1)
-            var_1 = np.var(eta_est[A==1], axis=0, ddof=1)
-            n_0 = np.sum(A==0)
-            n_1 = np.sum(A==1)
-            v0 = (var_0 + eps_var) / n_0
-            v1 = (var_1 + eps_var) / n_1
-            var_est = v0 + v1
-            # Welch-Satterthwaite degrees of freedom (per gene)
-            df_eff = (v0 + v1)**2 / (v0**2 / (n_0 - 1) + v1**2 / (n_1 - 1))
+            n_0 = int(np.sum(A==0))
+            n_1 = int(np.sum(A==1))
+            if n_0 < 2 or n_1 < 2:
+                import warnings
+                warnings.warn(
+                    f"Welch variance requires at least 2 cells per arm; got "
+                    f"n_0={n_0}, n_1={n_1} for this perturbation. Per-gene "
+                    f"variance and df will be NaN; results for these genes "
+                    f"are silently dropped by downstream BH correction. "
+                    f"Pass ``usevar='pooled'`` if you need finite estimates "
+                    f"in this regime.",
+                    RuntimeWarning, stacklevel=3,
+                )
+            with np.errstate(invalid='ignore', divide='ignore'):
+                var_0 = np.var(eta_est[A==0], axis=0, ddof=1)
+                var_1 = np.var(eta_est[A==1], axis=0, ddof=1)
+                v0 = (var_0 + eps_var) / n_0
+                v1 = (var_1 + eps_var) / n_1
+                var_est = v0 + v1
+                # Welch-Satterthwaite degrees of freedom (per gene)
+                df_eff = (v0 + v1)**2 / (v0**2 / (n_0 - 1) + v1**2 / (n_1 - 1))
         else:
             raise ValueError('usevar must be either "pooled" or "unequal"')
 
@@ -277,6 +324,22 @@ def LFC(
         tau_est[idx] = 0.; eta_est[:,idx] = 0.; var_est[idx] = np.inf
         if df_eff is not None:
             df_eff[idx] = np.nan
+
+        # Count genes whose Welch df is NaN for reasons OTHER than the
+        # low-expression filter (which is intentional) — typically caused by
+        # ``var = NaN`` from very small per-arm counts.  These rows are
+        # silently dropped by ``bh_correction``'s ``~np.isnan(t)`` mask, so
+        # surface a single warning if any survive the filter.
+        if df_eff is not None:
+            silent_nan = int(np.sum(np.isnan(df_eff) & ~idx))
+            if silent_nan > 0:
+                import warnings
+                warnings.warn(
+                    f"{silent_nan} gene(s) produced NaN Welch df despite "
+                    f"passing the low-expression filter; these will be "
+                    f"reported as NaN p-values in the result DataFrame.",
+                    RuntimeWarning, stacklevel=3,
+                )
 
         return eta_est, tau_est, var_est, df_eff
 
@@ -443,7 +506,11 @@ def gcate_lfc_batch(
         (e.g. ``usevar``, ``fdx``, ``thres_min``).
     **kwargs
         Additional arguments forwarded to both :func:`fit_gcate_batch` and
-        :func:`LFC`.
+        :func:`LFC`.  When a key collides with ``gcate_kwargs`` /
+        ``lfc_kwargs``, the **stage-specific dict wins** — this lets you
+        scope a kwarg to one stage (e.g. ``gcate_kwargs=dict(
+        backend='fast')`` paired with a top-level ``backend='original'``
+        targeting LFC).
 
     Returns
     -------
@@ -459,7 +526,15 @@ def gcate_lfc_batch(
     if lfc_kwargs is None:
         lfc_kwargs = {}
 
-    if isinstance(Y, pd.DataFrame):
+    # Sparse Y is densified up front (with the standard ResourceWarning) so
+    # downstream NumPy slicing works the same way as for dense / DataFrame
+    # inputs.  See Finding 10 in the review.
+    import scipy.sparse as _sp
+    from causarray.nb_glm_fast import _maybe_densify
+    if _sp.issparse(Y):
+        Y_np = _maybe_densify(Y)
+        gene_names = None
+    elif isinstance(Y, pd.DataFrame):
         Y_np = Y.values
         gene_names = list(Y.columns)
     else:
@@ -475,29 +550,63 @@ def gcate_lfc_batch(
         A_np = np.asarray(A, dtype=float)
         pert_names_all = list(range(A_np.shape[1]))
 
-    # ── Disk-cache: load already-completed batches ───────────────────────
-    cached_dfs = {}   # batch_i → DataFrame
+    # ── Disk-cache: identify cached batches and validate schema ─────────
+    # Only the HDF5 keys are read here.  The cached DataFrames themselves
+    # are loaded lazily inside the final concat step so peak memory stays
+    # bounded by ``max(n_cached_batch_size, current_batch_size)`` instead
+    # of ``Σ cached_batch_size`` — important when ``a`` is in the hundreds.
+    # On first write below we record a ``/meta`` row tagged with the
+    # causarray version, GLM family, perturbation count, and the LFC
+    # output-column tuple; on resume we refuse to mix incompatible
+    # schemas to avoid silently producing NaN-filled rows in the
+    # concatenated result.
+    from causarray.__about__ import __version__ as _causarray_version
+    cached_keys = {}  # batch_i → "/batch_NNNN" hdf5 key
+    cache_meta_existing = None
     skip_batches = set()
     if cache_path is not None:
         try:
             with pd.HDFStore(cache_path, mode='r') as store:
-                for key in store.keys():
+                keys = store.keys()
+                if '/meta' in keys:
+                    cache_meta_existing = store['/meta']
+                for key in keys:
                     # keys look like '/batch_0000'
                     if key.startswith('/batch_'):
                         try:
                             idx = int(key.split('_')[1])
-                            cached_dfs[idx] = store[key]
+                            cached_keys[idx] = key
                             skip_batches.add(idx)
                         except (ValueError, IndexError):
                             pass
         except (FileNotFoundError, OSError):
             pass  # cache file doesn't exist yet — start fresh
+        if cache_meta_existing is not None:
+            _expected = {
+                'family': family,
+                'a_total': int(A_np.shape[1]),
+            }
+            for key_, val_ in _expected.items():
+                if key_ in cache_meta_existing.columns:
+                    got = cache_meta_existing.iloc[0][key_]
+                    if got != val_:
+                        raise ValueError(
+                            f"gcate_lfc_batch cache at {cache_path!r} was written "
+                            f"with {key_}={got!r}, but the current call uses "
+                            f"{key_}={val_!r}.  Refusing to mix incompatible "
+                            f"schemas — delete the cache file or pass a fresh "
+                            f"cache_path to start over."
+                        )
         if verbose and skip_batches:
             print(f'[gcate_lfc_batch] Resuming: {len(skip_batches)} batches '
                   f'already cached in {cache_path!r}')
 
     # ── Run GCATE in batches ─────────────────────────────────────────────
     # Pass original A so pert_names inside fit_gcate_batch match pert_col_map.
+    # Precedence: explicit ``gcate_kwargs`` wins over the generic ``**kwargs``
+    # so a user can scope a kwarg to GCATE only (e.g.
+    # ``gcate_kwargs=dict(backend='fast')`` together with a top-level
+    # ``backend='original'`` intended for LFC).  See Finding 9 in the review.
     batch_results = fit_gcate_batch(
         Y_np, X_np, A, r,
         batch_size=batch_size,        n_batches=n_batches,        max_cells=max_cells,
@@ -508,7 +617,7 @@ def gcate_lfc_batch(
         skip_batches=skip_batches,
         random_state=random_state,
         verbose=verbose,
-        **{**gcate_kwargs, **kwargs},
+        **{**kwargs, **gcate_kwargs},
     )
 
     # Build a column-name lookup once
@@ -554,14 +663,29 @@ def gcate_lfc_batch(
             family=family,
             offset=offset_b,
             verbose=verbose,
-            **{**lfc_kwargs, **kwargs},
+            # Precedence: explicit ``lfc_kwargs`` wins over the generic
+            # ``**kwargs`` for the same reason as the GCATE call above —
+            # see Finding 9 in the review.
+            **{**kwargs, **lfc_kwargs},
         )
         df_b['batch'] = batch_i
         new_dfs[batch_i] = df_b
 
-        # ── Disk-cache: persist this batch ──────────────────────────────
+        # ── Disk-cache: persist this batch (and the schema /meta row) ──
         if cache_path is not None:
             with pd.HDFStore(cache_path, mode='a') as store:
+                # Write the schema-version /meta record the first time we
+                # touch the store.  Validating this on resume catches
+                # cross-version / cross-config cache reuse before NaN
+                # contamination can sneak into the concat.
+                if '/meta' not in store.keys():
+                    _meta = pd.DataFrame({
+                        'causarray_version': [_causarray_version],
+                        'family': [family],
+                        'a_total': [int(A_np.shape[1])],
+                        'columns': [','.join(df_b.columns.astype(str))],
+                    })
+                    store.put('/meta', _meta, format='fixed')
                 store.put(f'batch_{batch_i:04d}', df_b, format='fixed')
 
         # Free large intermediate arrays immediately (D6: no memory accumulation)
@@ -571,11 +695,26 @@ def gcate_lfc_batch(
         br['res_2'] = None
         gc.collect()
 
-    # Merge cached and newly computed batches, sorted by batch index
-    all_dfs = {**cached_dfs, **new_dfs}
-    return pd.concat(
-        [all_dfs[i] for i in sorted(all_dfs)], axis=0
-    ).reset_index(drop=True)
+    # Merge cached and newly computed batches lazily: open the HDFStore
+    # once, stream each cached frame at concat time, and close the store
+    # immediately afterwards.  Peak memory now scales with one batch
+    # rather than ``Σ cached_batch_size`` (Finding 18).
+    new_indices = set(new_dfs)
+    cached_indices = set(cached_keys)
+    all_indices = sorted(new_indices | cached_indices)
+
+    if cached_indices and cache_path is not None:
+        with pd.HDFStore(cache_path, mode='r') as store:
+            frames = [
+                new_dfs[i] if i in new_indices else store[cached_keys[i]]
+                for i in all_indices
+            ]
+            result = pd.concat(frames, axis=0).reset_index(drop=True)
+    else:
+        result = pd.concat(
+            [new_dfs[i] for i in all_indices], axis=0
+        ).reset_index(drop=True)
+    return result
 
 
 def LFC_batch(*args, **kwargs):

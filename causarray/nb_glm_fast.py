@@ -170,6 +170,7 @@ def fit_glm_fast(
     disp_glm: np.ndarray | None = None,
     impute: bool | np.ndarray = False,
     offset: np.ndarray | bool | None = None,
+    offset_test: np.ndarray | None = None,
     shrinkage: bool = False,
     alpha: float = 1e-4,
     maxiter: int = 1000,
@@ -259,7 +260,7 @@ def fit_glm_fast(
         return _fit_glm_fast_per_perturbation(
             Y_float, X, A, a, d, p, n, family, disp_glm,
             impute, X_test, offset_arr, offsets, maxiter, verbose,
-            mem_limit_gb=mem_limit_gb,
+            mem_limit_gb=mem_limit_gb, offset_test=offset_test,
         )
 
     B, Yhat, disp_glm_out, resid_deviance = _fit_glm_fast_single(
@@ -269,7 +270,16 @@ def fit_glm_fast(
     # Handle imputation (counterfactual predictions)
     if impute is not False and A is not None:
         n_test = X_test.shape[0]
-        offsets_test = offsets if (offsets is not None and offsets.shape[0] == n_test) else None
+        # Prefer an explicitly-supplied test-fold offset (e.g. from K>1
+        # cross-fitting where the training offset has length n_train ≠ n_test).
+        # Fall back to the training offset only when its length matches n_test
+        # (K=1 case where train and test indices coincide).
+        if offset_test is not None and np.asarray(offset_test).shape[0] == n_test:
+            offsets_test = np.asarray(offset_test, dtype=np.float64).ravel()
+        elif offsets is not None and offsets.shape[0] == n_test:
+            offsets_test = offsets
+        else:
+            offsets_test = None
         Yhat_0 = np.zeros((n_test, p, a))
         Yhat_1 = np.zeros((n_test, p, a))
         for k in range(a):
@@ -361,7 +371,7 @@ def _fit_glm_fast_single(
 def _fit_glm_fast_per_perturbation(
     Y_float, X, A, a, d, p, n, family, disp_glm,
     impute, X_test, offset_arr, offsets, maxiter, verbose,
-    mem_limit_gb=None,
+    mem_limit_gb=None, offset_test=None,
 ):
     """Per-perturbation GLM fitting with global covariate model.
 
@@ -450,7 +460,16 @@ def _fit_glm_fast_per_perturbation(
     do_impute = impute is not False and X_test is not None
     if do_impute:
         n_test = X_test.shape[0]
-        offsets_test = offsets if (offsets is not None and offsets.shape[0] == n_test) else None
+        # Prefer an explicitly-supplied test-fold offset (e.g. from K>1
+        # cross-fitting where the training offset has length n_train ≠ n_test).
+        # Fall back to the training offset only when its length matches n_test
+        # (K=1 case where train and test indices coincide).
+        if offset_test is not None and np.asarray(offset_test).shape[0] == n_test:
+            offsets_test = np.asarray(offset_test, dtype=np.float64).ravel()
+        elif offsets is not None and offsets.shape[0] == n_test:
+            offsets_test = offsets
+        else:
+            offsets_test = None
         # Y_hat_0 is the SAME for all perturbations (from global cov model)
         X_test_cov = X_test[:, :d]
         eta_0_test = X_test_cov @ B_cov_global.T  # (n_test, p)

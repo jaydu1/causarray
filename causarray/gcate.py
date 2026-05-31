@@ -53,7 +53,7 @@ def _check_input(Y, X, family, disp_glm, disp_family, offset, c1, **kwargs):
 
 def fit_gcate(Y, X, A, r, family='nb', disp_glm=None, disp_family=None, offset=True,
     kwargs_ls_1={}, kwargs_ls_2={}, kwargs_es_1={}, kwargs_es_2={},
-    c1=None, backend: str = "auto", **kwargs
+    c1=None, backend: str = "auto", A_init=None, **kwargs
 ):
     '''Fit the GCATE model.
 
@@ -86,6 +86,13 @@ def fit_gcate(Y, X, A, r, family='nb', disp_glm=None, disp_family=None, offset=T
     backend : str
         GLM backend to use: ``"auto"`` (default), ``"fast"`` (force crispyx),
         or ``"original"`` (force statsmodels).  Not thread-safe.
+    A_init : array-like, shape (n, d + a + r) or None
+        Optional warm-start for the first-stage augmented factor matrix
+        ``[X | A | U]`` passed to :func:`alter_min`.  When provided, the
+        SVD-based initialisation in :func:`alter_min` is skipped and the
+        supplied matrix seeds the first-stage iterations.  Used by
+        :func:`fit_gcate_batch` to warm-start ``U`` rows for control cells
+        across batches.
     kwargs : dict
         Additional keyword arguments.
     '''
@@ -99,13 +106,15 @@ def fit_gcate(Y, X, A, r, family='nb', disp_glm=None, disp_family=None, offset=T
         r = int(r)
 
         res_1, res_2 = estimate(Y, X, r, a,
-            lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, **kwargs)
+            lam1, kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2,
+            A_init=A_init, **kwargs)
 
     return res_1, res_2
 
 
-def estimate(Y, X, r, a, lam1, 
-    kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2, **kwargs):
+def estimate(Y, X, r, a, lam1,
+    kwargs_glm, kwargs_ls_1, kwargs_es_1, kwargs_ls_2, kwargs_es_2,
+    A_init=None, **kwargs):
     '''
     Two-stage estimation of the GCATE model.
 
@@ -147,14 +156,22 @@ def estimate(Y, X, r, a, lam1,
     p = Y.shape[1]
 
     valid_params = _filter_params(alter_min, kwargs)
+    # ``A`` is controlled exclusively via the explicit ``A_init`` route below
+    # so a stray ``A=`` kwarg from upstream cannot silently override it.
+    valid_params.pop('A', None)
 
     res_1 = alter_min(
-        Y, r, X=X, P1=True,
+        Y, r, X=X, P1=True, A=A_init,
         kwargs_glm=kwargs_glm, kwargs_ls=kwargs_ls_1, kwargs_es=kwargs_es_1, **valid_params)
     Q, _ = sp.linalg.qr(res_1['B_Gamma'][:,-r:], mode='economic')
-    # Store thin Q factor (p, r) instead of full (p, p) projection matrix.
-    # For Adamson (p=14618, r=5) this saves ~1.7 GB.
-    P_Gamma = Q.astype(np.float32)
+    # Store thin Q factor (p, r) instead of the dense (p, p) projection
+    # matrix.  For Adamson (p=14618, r=5) the shape change alone reclaims
+    # ~1.7 GB — the (p, p) form was the actual cost, not the dtype.  No
+    # ``.astype(np.float32)`` here because ``alter_min`` immediately
+    # recasts ``P2`` to ``type_f`` (float64), so a float32 round-trip
+    # would only allocate a transient extra ~0.3 MB without changing
+    # peak memory.
+    P_Gamma = Q
 
     if lam1 == 0.:
         res_2 = {'X_U': res_1['X_U'], 'B_Gamma': res_1['B_Gamma']}
@@ -194,13 +211,16 @@ def estimate_r(Y, X, A, r_max, c=1.,
     max_cells : int or None
         Maximum number of cells to use for estimation.  When the dataset
         exceeds this size, a stratified subsample is drawn automatically:
-        control cells (all-zero rows of ``A``) are prioritised and the
-        remaining budget is filled with a random sample of treated cells.
-        This is especially useful for large batch-fitting workflows where
-        ``n`` is in the tens of thousands — confounding structure (captured
-        by ``r``) is concentrated in the control cells, so a ctrl-priority
-        subsample is both faster and statistically principled.
-        ``None`` (default) uses all cells.
+        a floor of ``max_cells // 4`` slots is reserved for treated cells
+        (or all of them if ``len(pert_idx) < max_cells // 4``) so that
+        perturbation-induced latent variation remains visible to the JIC,
+        and the remaining budget goes to controls (with leftovers spilling
+        back to treated cells if controls are themselves scarce).  This is
+        especially useful for large batch-fitting workflows where ``n`` is
+        in the tens of thousands; confounding structure (captured by ``r``)
+        is concentrated in the baseline transcriptome, so a ctrl-priority
+        subsample with a treated-cell floor is both faster and statistically
+        principled.  ``None`` (default) uses all cells.
     random_state : int
         RNG seed for subsampling (only used when ``max_cells`` is set).
     kwargs_ls_1 : dict
@@ -225,10 +245,19 @@ def estimate_r(Y, X, A, r_max, c=1.,
         ctrl_mask = A_np.sum(axis=1) == 0
         ctrl_idx = np.where(ctrl_mask)[0]
         pert_idx  = np.where(~ctrl_mask)[0]
-        # Allocate budget: as many ctrl cells as possible, fill rest with pert cells
-        n_ctrl_use = min(len(ctrl_idx), max_cells)
+        # Budget split with a treated-cell floor.  Reserving at least
+        # ``max_cells // 4`` slots for treated cells (or all of them if
+        # ``len(pert_idx) < max_cells // 4``) ensures that perturbation-
+        # induced latent variation is visible to the JIC even when the
+        # control pool would otherwise saturate the budget — previously,
+        # ``len(ctrl_idx) >= max_cells`` quietly left ``n_pert_use=0`` and
+        # ``r`` was under-estimated.  After reserving the floor, any
+        # remaining budget goes to controls; if controls are themselves
+        # scarce, leftover slots fall back to additional treated cells.
+        n_pert_floor = min(len(pert_idx), max(1, max_cells // 4))
+        n_ctrl_use = min(len(ctrl_idx), max_cells - n_pert_floor)
         n_pert_use = min(len(pert_idx), max_cells - n_ctrl_use)
-        sel_ctrl = rng.choice(ctrl_idx, n_ctrl_use, replace=False)
+        sel_ctrl = rng.choice(ctrl_idx, n_ctrl_use, replace=False) if n_ctrl_use > 0 else np.array([], dtype=int)
         sel_pert = rng.choice(pert_idx, n_pert_use, replace=False) if n_pert_use > 0 else np.array([], dtype=int)
         sel = np.sort(np.concatenate([sel_ctrl, sel_pert]))
         Y = Y.iloc[sel] if isinstance(Y, pd.DataFrame) else np.asarray(Y)[sel]
@@ -261,9 +290,12 @@ def estimate_r(Y, X, A, r_max, c=1.,
     if u.shape[1]<r_max:
         raise ValueError(f'The number of latent factors is larger than the rank of deviance residuals ({u.shape[1]}). Try to decrease the value of r.')
     Q, _ = sp.linalg.qr(X, mode='economic')
-    P1 = np.identity(n) - Q @ Q.T
-    P1 = P1.astype(type_f)
-    A1 = np.c_[X, P1 @ u]
+    # Implicit projection: (I - Q @ Q.T) @ u = u - Q @ (Q.T @ u).
+    # Avoids materialising the dense (n, n) matrix — for Adamson scale
+    # (n ~ 30 000) this saves ~7 GB even when ``max_cells`` is not set.
+    Q = Q.astype(type_f)
+    u_proj = u - Q @ (Q.T @ u)
+    A1 = np.c_[X, u_proj]
 
     logh = log_h(Y, family, nuisance)
     ll = 2 * ( 
@@ -315,12 +347,21 @@ def fit_gcate_batch(
 
     Parameters
     ----------
-    Y : array-like or DataFrame, shape (n, p)
-        Count matrix.
+    Y : array-like, DataFrame, or scipy.sparse, shape (n, p)
+        Count matrix.  Sparse inputs are densified to ``float64`` once at the
+        start of the function; a :class:`ResourceWarning` is emitted when
+        the dense materialisation would exceed ~4 GB.
     X : array, shape (n, d)
         Covariate matrix (intercept should be included).
     A : array-like or DataFrame, shape (n, a)
         Binary treatment indicator matrix; control cells have all-zero rows.
+        **Single-perturbation-per-cell is assumed**: the batch loop treats
+        any cell whose only active perturbation falls outside the current
+        chunk as a control within that batch, which silently contaminates
+        the within-batch null for combinatorial designs.  When such rows
+        are detected a :class:`RuntimeWarning` is emitted at function
+        entry — pass ``n_batches=1`` or pre-filter multi-pert rows to
+        suppress it.
     r : int
         Number of latent factors.
     batch_size : int
@@ -397,10 +438,20 @@ def fit_gcate_batch(
     import gc
     import time
 
+    import scipy.sparse as _sp
     from causarray.utils import subsample_ctrl_cells, subsample_pert_cells, comp_size_factor, _filter_params
+    from causarray.nb_glm_fast import _maybe_densify
 
     # ── Normalise inputs ────────────────────────────────────────────────
-    Y_np = np.asarray(Y) if not isinstance(Y, pd.DataFrame) else Y.values
+    # Sparse Y is common for Perturb-seq counts; densify with the same
+    # memory-cost warning as ``_maybe_densify`` rather than crash on the
+    # 0-d wrapper that ``np.asarray(sparse_matrix)`` would return.
+    if _sp.issparse(Y):
+        Y_np = _maybe_densify(Y)
+    elif isinstance(Y, pd.DataFrame):
+        Y_np = Y.values
+    else:
+        Y_np = np.asarray(Y)
     X_np = np.asarray(X)
 
     if isinstance(A, pd.DataFrame):
@@ -412,6 +463,30 @@ def fit_gcate_batch(
 
     n, p = Y_np.shape
     a_total = A_np.shape[1]
+
+    # ── Multi-perturbation contamination check ─────────────────────────
+    # The batch loop builds ``A_b`` from the chunk's columns only.  A cell
+    # whose perturbation is OUTSIDE the current chunk surfaces in ``A_b``
+    # as an all-zero row, indistinguishable from a true control — so its
+    # expression (which still reflects the off-chunk perturbation) leaks
+    # into the within-batch null estimate.  This is fine for single-pert
+    # Perturb-seq (the dominant Perturb-seq design), but for combinatorial
+    # screens it silently biases the per-batch GCATE fit.  Warn once if
+    # multi-pert rows are detected so the user can decide whether to
+    # process them in a single batch (``n_batches=1``) or accept the
+    # contamination.
+    _multi_pert_rows = int(np.sum(A_np.sum(axis=1) > 1))
+    if _multi_pert_rows > 0:
+        import warnings as _warnings
+        _warnings.warn(
+            f"fit_gcate_batch detected {_multi_pert_rows} cell(s) with more "
+            f"than one active perturbation. Within each batch, off-chunk "
+            f"perturbations are treated as controls, which biases the "
+            f"per-batch null for combinatorial designs.  For pure "
+            f"combinatorial screens pass ``n_batches=1`` (no chunking) or "
+            f"exclude multi-pert rows before calling.",
+            RuntimeWarning, stacklevel=2,
+        )
 
     # ── Fixed ctrl subsample (shared across all batches) ────────────────
     ctrl_idx_all = np.where(A_np.sum(axis=1) == 0)[0]
@@ -492,7 +567,11 @@ def fit_gcate_batch(
         if 'disp_family' not in gcate_kw:
             gcate_kw['disp_family'] = 'poisson' if disp_glm is not None else disp_family
 
-        # Warm-start U for ctrl rows from previous batch
+        # Warm-start U for ctrl rows from previous batch.  The matrix is
+        # passed via fit_gcate's explicit ``A_init`` parameter so it lands on
+        # alter_min's top-level ``A`` argument; stuffing it into
+        # ``kwargs_ls_1`` would silently no-op because alter_min never reads
+        # ``kwargs_ls['A']``.
         if warm_start_U and U_ctrl_prev is not None:
             # Map ctrl_sel → local row indices in cell_idx
             ctrl_local = np.searchsorted(cell_idx, ctrl_sel)
@@ -501,7 +580,7 @@ def fit_gcate_batch(
             X_U_init = np.zeros((n_b, d_b + r), dtype=np.float32)
             X_U_init[:, :d_b] = np.c_[X_b, A_b]
             X_U_init[ctrl_local, d_b:] = U_ctrl_prev
-            gcate_kw.setdefault('kwargs_ls_1', {})['A'] = X_U_init
+            gcate_kw['A_init'] = X_U_init
 
         res_1, res_2 = fit_gcate(Y_b, X_b, A_b, r, family=family, offset=offset, **gcate_kw)
 

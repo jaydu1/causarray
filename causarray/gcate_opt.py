@@ -90,21 +90,33 @@ def line_search(Y, A, x0, g, d, family, nuisance, Ys, thres_disp, start,
 def update(Y, A, B, d, lam, P1, P2,
           family, nuisance, Ys, thres_disp, a, C,
           alpha, beta, max_iters, tol):
+    """Single alternating-minimisation step (no per-entity convergence mask).
+
+    ``P1`` and ``P2`` follow the thin-Q convention used everywhere else in
+    ``alter_min`` — they are the QR factor of the relevant design block,
+    not the full ``(I − QQᵀ)`` projection matrix.  Projections are applied
+    implicitly as ``v -= Q @ (Q.T @ v)`` so that the caller can hand in
+    ``(n, d_X)`` / ``(p, r)`` arrays instead of dense ``(n, n)`` / ``(p, p)``
+    matrices.
+
+    Functionally equivalent to ``update_with_mask`` with all-True masks and
+    a uniform ``alpha`` step size; kept around for the T4 parity test.
+    """
     n, p = Y.shape
-    
+
     g = grad(Y.T, B, A, family, nuisance.T, thres_disp)
     g[:, :d] = 0.
     for i in prange(n):
         g[i, d:] = project_norm_ball(g[i, d:], 2*C)
 
-        A[i, :] = line_search(Y[i, :], B, A[i, :], g[i, :], d, 
-                              family, nuisance[0], Ys[i, :], thres_disp, 0, 
+        A[i, :] = line_search(Y[i, :], B, A[i, :], g[i, :], d,
+                              family, nuisance[0], Ys[i, :], thres_disp, 0,
                               type_f(0.), alpha, beta, max_iters, tol)
     if P1 is not None:
         # Implicit projection: (I - Q @ Q.T) @ v = v - Q @ (Q.T @ v)
         # P1 is the thin Q factor (n, d_X), not the full (n, n) matrix.
         A[:, d:] -= P1 @ (P1.T @ A[:, d:])
-    
+
     g = grad(Y, A, B, family, nuisance, thres_disp)
     if P1 is not None:
         g[:, :d] = 0.
@@ -121,7 +133,7 @@ def update(Y, A, B, d, lam, P1, P2,
         else:
             g[j, :d] = project_norm_ball(g[j, :d], 2*C)
 
-        B[j, :] = line_search(Y[:, j], A, B[j, :], g[j, :], d, 
+        B[j, :] = line_search(Y[:, j], A, B[j, :], g[j, :], d,
                               family, nuisance[:,j], Ys[:, j], thres_disp, d-a,
                               lam[j,:], alpha, beta, max_iters, tol
                              )
@@ -260,6 +272,11 @@ def alter_min(
         'sparsity_boost': 2.0,     # alpha multiplier for sparse genes
         'warmup_iters': 0,         # B-only warm-up iterations for sparse genes after init
     }, **kwargs_ls}
+    # Default ``max_iters=50`` (down from 500 in v0.0.5).  ``rel_tol=2e-4``
+    # combined with ``patience=5`` reliably short-circuits the loop once the
+    # NLL has plateaued in practice; if a user needs a tighter convergence
+    # bound they can override via ``kwargs_es_1`` / ``kwargs_es_2``.  See
+    # CHANGELOG → Changed for the migration note.
     kwargs_es = {**{'max_iters':50, 'warmup':0, 'patience':5, 'tolerance':0., 'rel_tol':2e-4}, **kwargs_es}
 
     if kwargs_es['max_iters'] == 0:
@@ -373,6 +390,12 @@ def alter_min(
                 kwargs_ls['alpha'], kwargs_ls['beta'], kwargs_ls['max_iters'], kwargs_ls['tol'],
                 wu_gene_active, wu_cell_active, alpha_gene,
             )
+        # Refresh ``func_val_pre`` so ``hist[0]`` reflects the post-warmup
+        # objective.  Without this, the first main-loop iteration's improvement
+        # appears to include all of the warm-up's NLL drop (creating a one-step
+        # cliff in the hist plot and misattributing the warm-up gain).
+        func_val_pre = (nll(Y, A, B, family, nuisance, Ys, thres_disp) + np.sum(np.abs(B[:,d-a:d]) * weights)) / p
+        func_val = func_val_pre
 
     kwargs_ls['alpha'] = kwargs_ls['alpha']
     if verbose:
