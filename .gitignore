@@ -163,7 +163,12 @@ cython_debug/
 #.idea/
 
 
-test*
+# Generic module tests under tests/ ARE tracked (regression coverage for
+# the causarray API).  Exclude only benchmark / scratch files that are
+# not part of the unit-test suite — add new exclusions here when
+# benchmark or tutorial-coupled test files appear.
+tests/benchmark_adamson.py
+
 causarray/___*.py
 /docs/source/tutorial/adamson
 
