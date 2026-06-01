@@ -155,7 +155,7 @@ version = release
 suppress_warnings = ['epub.unknown_project_files']
 
 templates_path = ['_templates']
-exclude_patterns = ['_build', '**.ipynb_checkpoints', '**.h5ad']
+exclude_patterns = ['_build', '**.ipynb_checkpoints', '**.h5ad', 'tutorial/adamson/**']
 
 
 
