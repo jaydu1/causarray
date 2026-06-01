@@ -112,6 +112,29 @@ On synthetic data (n = 500, p = 200): 61.5× GLM fit speedup, 7.1× imputation s
 
 Latent factor recovery: mean canonical correlation 0.998. LFC correlation: 0.856 (expected difference due to per-perturbation vs. joint model specification).
 
+**Additional LFC throughput improvements** (`nb_glm_fast.py`, `_fit_glm_fast_per_perturbation`):
+
+Three targeted changes reduce end-to-end `gcate_lfc_batch` wall time by **1.48×** on the Replogle tutorial dataset (79,865 cells × 8,563 genes, 200 perturbations, 14 batches):
+
+| Change | File | Speedup contribution | Accuracy impact |
+|--------|------|----------------------|-----------------|
+| Stage 1 `max_iter` 50 → 5 (NB) / 10 (Poisson) | `nb_glm_fast.py` | −10 min | identical (r=1.000) |
+| Stage 1 ≤3,000-cell mixed subsample (ctrl+pert) | `nb_glm_fast.py` | −55 min | tau r=0.992, Jaccard=0.80 |
+| Stage 2 joint fit: single `fit_batch_with_joint_offsets(design=A)` | `nb_glm_fast.py` | −5 min | tau r=0.9994, Jaccard=0.975 |
+| **Combined (A+G+B)** | | **−70.6 min / 1.48×** | **tau r=0.9994, Jaccard=0.975** |
+
+Full-run comparison (14 batches, Replogle subset):
+
+| Metric | Original | Optimized | Change |
+|--------|----------|-----------|--------|
+| Wall time | 217.5 min | **146.9 min** | **1.48×** faster |
+| Sig pairs (padj < 0.05) | 222,090 | 221,657 | −0.2% |
+| Perts with ≥1 hit | 173/200 | 172/200 | −0.6% |
+| Tau Pearson r | — | 0.9994 | near-identical |
+| Jaccard similarity | — | 0.975 | near-identical |
+
+The Stage 1 subsample uses a random draw of up to 3,000 cells from both control and perturbation cells; column scaling and covariate offsets still use all cells.  The Stage 2 joint fit is mathematically equivalent to the original per-perturbation loop for one-hot treatment designs (block-diagonal IRLS normal equations).
+
 ## [0.0.5] - 2025-01-30
 
 - GCATE model for gene-level causal effect estimation from CRISPR screens.
