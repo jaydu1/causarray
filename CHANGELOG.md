@@ -6,97 +6,80 @@
 
 - **Batch-wise fitting API** (`causarray/gcate.py`, `causarray/DR_learner.py`, `causarray/utils.py`)
   - `fit_gcate_batch(Y, X, A, r, batch_size=10, max_cells=2000, n_ctrl=2000, ...)`:
-    Fits GCATE independently on batches of `batch_size` perturbations.  A fixed
-    subsample of `n_ctrl` control cells is shared across all batches, dispersion
-    is pre-estimated once on the control pool, and pert cells are capped at
-    `max_cells=2000` (ctrl added on top).  Accepts `skip_batches` to resume
-    interrupted runs.  Per-batch wall time and ETA reported when `verbose=True`.
-  - `gcate_lfc_batch(Y, X, A, r, batch_size=10, max_cells=2000, n_ctrl=2000,
-    cache_path=None, ...)`:
-    End-to-end batch pipeline — runs GCATE *and* LFC per batch, freeing all
-    large intermediate arrays (`res_1`, `res_2`, `Y_hat`, `pi_hat`) after each
-    batch.  `cache_path` enables HDF5 disk caching via `pandas.HDFStore`:
-    completed batches are written to disk and skipped on resume, so interrupted
-    runs continue from the last completed batch.  Returns a concatenated
-    DataFrame with a `'batch'` column.
+    Fits GCATE independently on batches of perturbations. A shared control
+    subsample of `n_ctrl` cells is reused across batches; dispersion is
+    pre-estimated once on the control pool. Supports `skip_batches` to resume
+    interrupted runs; reports per-batch wall time and ETA when `verbose=True`.
+  - `gcate_lfc_batch(Y, X, A, r, batch_size=10, max_cells=2000, n_ctrl=2000, cache_path=None, ...)`:
+    End-to-end batch pipeline — runs GCATE and LFC per batch, freeing large
+    intermediate arrays after each batch. `cache_path` enables HDF5 disk
+    caching via `pandas.HDFStore` so interrupted runs resume from the last
+    completed batch. Returns a concatenated DataFrame with a `'batch'` column.
   - `LFC_batch(...)`: deprecated alias for `gcate_lfc_batch`; emits
     `DeprecationWarning` and will be removed in a future release.
-  - `subsample_ctrl_cells(ctrl_idx, n_ctrl=2000, random_state=0)` and
-    `subsample_pert_cells(pert_idx, max_cells=2000, random_state=0)`:
-    Internal utilities for reproducible, per-batch cell subsampling.
-    `max_cells` caps pert cells only; ctrl cells are added on top.
-  - Both batch functions accept DataFrame `A` with named perturbation columns.
   - `n_batches` parameter for `fit_gcate_batch` and `gcate_lfc_batch`:
     specifies total number of batches instead of per-batch count; overrides
-    `batch_size` when set. Batches are sized evenly with `numpy.array_split`
-    so the last batch is never more than 1 perturbation smaller than the
-    others, avoiding an unstable single-pert tail batch.
+    `batch_size` when set.
   - `estimate_r(max_cells=N, random_state=0)`: new parameter that
     automatically subsamples to at most `N` cells before running JIC
-    selection, prioritising control cells (all-zero rows of `A`). Filling
-    the ctrl budget first and then drawing remaining slots from treated cells
-    is equivalent to full-data estimation because confounding structure is
-    concentrated in the baseline transcriptome.
+    selection, prioritising control cells.
+
+- **Fast GLM backend via crispyx** (`nb_glm_fast.py`, `gcate_glm.py`)
+  - `fit_glm_fast()`: Batch NB-GLM fitting using crispyx's `NBGLMBatchFitter`,
+    replacing per-gene statsmodels IRLS with vectorized batch IRLS.
+  - `estimate_disp_fast()`: Vectorized method-of-moments dispersion estimation.
+  - `fit_glm_ondisk()`: On-disk streaming GLM fitting for large h5ad files.
+  - Per-perturbation fitting (`_fit_glm_fast_per_perturbation`): for
+    multi-treatment data, fits binary (ctrl vs. treatment_k) models
+    independently, then assembles the full coefficient matrix.
+  - `fit_glm_auto()`: Routes to `fit_glm_fast()` when crispyx is available and
+    the effective design dimension is small; falls back to statsmodels otherwise.
+  - `estimate_disp_auto()`: Routes to `estimate_disp_fast()` for large gene
+    counts; falls back to statsmodels otherwise.
 
 ### Fixed
 
-- **Numba TBB fork warning**: Set `NUMBA_THREADING_LAYER_PRIORITY` to prefer OpenMP over TBB in `__init__.py`, eliminating `Numba: Attempted to fork from a non-main thread, the TBB library may be in an invalid state in the child process` warnings when Joblib forks after Numba parallel execution.
-- Added `llvm-openmp` to conda dependencies for fork-safe OpenMP threading.
-- **Fast-path threshold** (`gcate_glm.py`): Raised the effective design-dimension ceiling and added a throughput heuristic; GCATE runs with larger `r` or wide batch designs now correctly use the crispyx path.
-- **Backend toggle** (`gcate_glm.py`): Re-added `_USE_FAST_BACKEND` module flag and `_backend_override()` context manager; setting `_USE_FAST_BACKEND = False` now reliably forces statsmodels through the entire GCATE + LFC call graph.
-- **Weighted dispersion** (`nb_glm_fast.py`): Dispersion averaging is now cell-count-weighted; low-coverage perturbations contribute proportionally less to the pooled estimate.
-- **Control-cell residuals** (`nb_glm_fast.py`): Control-cell deviance residuals and fitted values are now initialised from the global covariate model, eliminating a last-perturbation overwrite bug.
-- **Module-qualified imports** (`gcate_opt.py`, `gcate.py`, `DR_estimation.py`): Replaced import-time name bindings with module-qualified references so backend toggles propagate correctly at call time.
-- **`estimate_r` bare name** (`gcate.py`): Fixed a `NameError` when calling `estimate_r` that was caused by a bare `fit_glm_auto` reference.
-- **crispyx availability check** (`gcate_glm.py`): Added a one-time import check; users without crispyx now get a transparent fallback to statsmodels instead of a traceback.
-- **Dead code removal** (`nb_glm_fast.py`): Removed an unreachable branch in `_compute_poisson_deviance_residuals`.
-
-### Added
-
-- **Fast GLM backend via crispyx** (`nb_glm_fast.py`)
-  - `fit_glm_fast()`: Batch NB-GLM fitting using crispyx's `NBGLMBatchFitter`, replacing per-gene statsmodels IRLS with vectorized batch IRLS across all genes simultaneously.
-  - `estimate_disp_fast()`: Vectorized method-of-moments dispersion estimation, replacing recursive Poisson GLM fitting.
-  - `fit_glm_ondisk()`: On-disk streaming GLM fitting for large h5ad files.
-
-- **Per-perturbation fitting strategy** (`_fit_glm_fast_per_perturbation()` in `nb_glm_fast.py`)
-  - For multi-treatment data, loops over perturbation columns and fits binary (control vs. treatment_k) models, avoiding the memory and runtime cost of wide joint design matrices.
-  - Covariate coefficients are averaged across perturbation-specific models; treatment coefficients are assembled into the full coefficient matrix.
-  - Imputation is performed per-perturbation with correct counterfactual construction.
-
-- **Auto-dispatch wrappers** (`gcate_glm.py`)
-  - `fit_glm_auto()`: Routes to `fit_glm_fast()` when the effective design dimension is small and crispyx is available; falls back to statsmodels otherwise. Includes convergence checking with automatic fallback.
-  - `estimate_disp_auto()`: Routes to `estimate_disp_fast()` when the number of genes is large enough for vectorized estimation to be faster.
+- **Numba TBB fork warning**: Set `NUMBA_THREADING_LAYER_PRIORITY` to prefer
+  OpenMP over TBB in `__init__.py`, eliminating fork warnings when Joblib forks
+  after Numba parallel execution. Added `llvm-openmp` to conda dependencies.
+- **Fast-path threshold** (`gcate_glm.py`): Raised the effective design-dimension
+  ceiling so larger `r` values and wide batch designs correctly use the crispyx path.
+- **Backend toggle** (`gcate_glm.py`): Re-added `_USE_FAST_BACKEND` module flag
+  and `_backend_override()` context manager for reliable statsmodels fallback.
+- **Weighted dispersion** (`nb_glm_fast.py`): Dispersion averaging is now
+  cell-count-weighted; low-coverage perturbations contribute proportionally less.
+- **Control-cell residuals** (`nb_glm_fast.py`): Fixed last-perturbation overwrite
+  bug; control-cell deviance residuals and fitted values are now initialised from
+  the global covariate model.
+- **Module-qualified imports** (`gcate_opt.py`, `gcate.py`, `DR_estimation.py`):
+  Backend toggles now propagate correctly at call time.
+- **`estimate_r` bare name** (`gcate.py`): Fixed `NameError` caused by a bare
+  `fit_glm_auto` reference.
+- **crispyx availability check** (`gcate_glm.py`): Users without crispyx now get
+  a transparent fallback to statsmodels instead of a traceback.
 
 ### Changed
 
 - **⚠️ `alter_min()` early-stopping defaults** (`gcate_opt.py`):
   - Default `kwargs_es['max_iters']` reduced from 500 → 50.
-  - Default `tolerance` reduced from `1e-3` → `0.0` and a new scale-
-    invariant `rel_tol=2e-4` introduced.  In practice the relative
-    threshold plus `patience=5` reaches the same fixed point as the
-    old absolute threshold within ≤ 50 iterations on every tested
-    dataset, but external benchmarks that relied on the 500-iteration
-    upper bound should pass `kwargs_es_1=dict(max_iters=500)` and
-    `kwargs_es_2=dict(max_iters=500)` to recover the pre-v0.0.6 budget.
+  - Default `tolerance` reduced from `1e-3` → `0.0`; new scale-invariant
+    `rel_tol=2e-4` introduced. To reproduce pre-v0.0.6 behavior, pass
+    `kwargs_es_1=dict(max_iters=500)` and `kwargs_es_2=dict(max_iters=500)`.
 
 - **⚠️ BREAKING — `LFC()` variance and default `usevar`** (`DR_learner.py`):
-  - Default `usevar` changed from `'pooled'` to `'unequal'` (Welch). Callers
-    not specifying `usevar=` will see Welch t-statistics instead of pooled
-    ones; revert with `LFC(..., usevar='pooled')` if reproducing pre-v0.0.6
-    results is required.
-  - **`'unequal'` formula corrected**: the variance is now
-    `var = s₀²/n₀ + s₁²/n₁` (standard Welch); previously it was
-    `(s₀²/n₀ + s₁²/n₁)/2`, a "half-Welch" that under-estimated the
-    standard error by √2.  Test statistics are therefore ~√2× smaller
-    than pre-v0.0.6 for explicit `usevar='unequal'` callers.
-  - p-values now use the t-distribution with Welch-Satterthwaite degrees
-    of freedom (per gene); the prior version used a Normal approximation.
+  - Default `usevar` changed from `'pooled'` to `'unequal'` (Welch). Revert
+    with `LFC(..., usevar='pooled')` if reproducing pre-v0.0.6 results.
+  - `'unequal'` formula corrected: variance is now `s₀²/n₀ + s₁²/n₁`
+    (standard Welch); the prior version used `(s₀²/n₀ + s₁²/n₁)/2`
+    ("half-Welch"), under-estimating the standard error by √2.
+  - p-values now use the t-distribution with Welch-Satterthwaite degrees of
+    freedom per gene; the prior version used a Normal approximation.
 
-- **`gcate_opt.py`**: `alter_min()` initialisation now uses the auto-dispatch GLM path.
-- **`gcate.py`**: `_check_input()` and `estimate_r()` now use the auto-dispatch dispersion and GLM paths.
-- **`DR_estimation.py`**: `cross_fitting()` now uses the auto-dispatch GLM path, enabling the per-perturbation fast path for multi-treatment LFC estimation.
-- **`DR_learner.py`**: `LFC()` now accepts `backend: str = "auto"` as an explicit parameter; `"fast"` forces crispyx, `"original"` forces statsmodels.
-- **`utils.py`**: `comp_size_factor()` vectorized with `np.nanmean`/`np.nanmedian`.
+- `alter_min()` initialisation, `_check_input()`, `estimate_r()`, and
+  `cross_fitting()` now use the auto-dispatch GLM/dispersion paths.
+- `LFC()` now accepts `backend: str = "auto"` (`"fast"` forces crispyx,
+  `"original"` forces statsmodels).
+- `comp_size_factor()` vectorized with `np.nanmean`/`np.nanmedian`.
 
 ### Performance
 
@@ -109,31 +92,19 @@ Benchmarked on Perturb-seq data (n = 2,926 cells, p = 3,221 genes, 29 perturbati
 | **Total** | **419.3 s** | **364.2 s** | **1.2×** |
 
 On synthetic data (n = 500, p = 200): 61.5× GLM fit speedup, 7.1× imputation speedup.
+Latent factor recovery: mean canonical correlation 0.998. LFC correlation: 0.856.
 
-Latent factor recovery: mean canonical correlation 0.998. LFC correlation: 0.856 (expected difference due to per-perturbation vs. joint model specification).
+**Additional LFC throughput improvements** on the Replogle tutorial dataset
+(79,865 cells × 8,563 genes, 200 perturbations, 14 batches):
 
-**Additional LFC throughput improvements** (`nb_glm_fast.py`, `_fit_glm_fast_per_perturbation`):
+| Change | Speedup contribution | Accuracy impact |
+|--------|----------------------|-----------------|
+| Stage 1 `max_iter` 50 → 5 (NB) / 10 (Poisson) | −10 min | identical (r=1.000) |
+| Stage 1 ≤3,000-cell mixed subsample | −55 min | tau r=0.992, Jaccard=0.80 |
+| Stage 2 joint fit | −5 min | tau r=0.9994, Jaccard=0.975 |
+| **Combined** | **−70.6 min / 1.48×** | **tau r=0.9994, Jaccard=0.975** |
 
-Three targeted changes reduce end-to-end `gcate_lfc_batch` wall time by **1.48×** on the Replogle tutorial dataset (79,865 cells × 8,563 genes, 200 perturbations, 14 batches):
-
-| Change | File | Speedup contribution | Accuracy impact |
-|--------|------|----------------------|-----------------|
-| Stage 1 `max_iter` 50 → 5 (NB) / 10 (Poisson) | `nb_glm_fast.py` | −10 min | identical (r=1.000) |
-| Stage 1 ≤3,000-cell mixed subsample (ctrl+pert) | `nb_glm_fast.py` | −55 min | tau r=0.992, Jaccard=0.80 |
-| Stage 2 joint fit: single `fit_batch_with_joint_offsets(design=A)` | `nb_glm_fast.py` | −5 min | tau r=0.9994, Jaccard=0.975 |
-| **Combined (A+G+B)** | | **−70.6 min / 1.48×** | **tau r=0.9994, Jaccard=0.975** |
-
-Full-run comparison (14 batches, Replogle subset):
-
-| Metric | Original | Optimized | Change |
-|--------|----------|-----------|--------|
-| Wall time | 217.5 min | **146.9 min** | **1.48×** faster |
-| Sig pairs (padj < 0.05) | 222,090 | 221,657 | −0.2% |
-| Perts with ≥1 hit | 173/200 | 172/200 | −0.6% |
-| Tau Pearson r | — | 0.9994 | near-identical |
-| Jaccard similarity | — | 0.975 | near-identical |
-
-The Stage 1 subsample uses a random draw of up to 3,000 cells from both control and perturbation cells; column scaling and covariate offsets still use all cells.  The Stage 2 joint fit is mathematically equivalent to the original per-perturbation loop for one-hot treatment designs (block-diagonal IRLS normal equations).
+Full-run: 217.5 min → 146.9 min (**1.48×** faster); sig pairs −0.2%, perts with ≥1 hit −0.6%.
 
 ## [0.0.5] - 2025-01-30
 
