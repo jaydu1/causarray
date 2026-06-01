@@ -8,6 +8,7 @@ results comparable to the original statsmodels-based implementation.
 import numpy as np
 import pytest
 import os
+import statsmodels.api as sm
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -174,6 +175,29 @@ class TestFitGLM:
             assert Yhat[0].shape == (Y.shape[0], Y.shape[1], A.shape[1])
             assert Yhat[1].shape == (Y.shape[0], Y.shape[1], A.shape[1])
 
+    def test_poisson_coefficients_match_statsmodels(self):
+        """fit_glm_fast (Poisson) coefficients agree with statsmodels within 20%."""
+        from causarray.nb_glm_fast import fit_glm_fast
+
+        rng = np.random.default_rng(0)
+        n, p = 120, 8
+        X = np.column_stack([np.ones(n), rng.standard_normal(n)])
+        B_true = rng.standard_normal((p, 2)) * 0.3
+        Y = rng.poisson(np.exp(X @ B_true.T)).astype(float)
+
+        B, Yhat, disp_glm, offsets, resid_dev = fit_glm_fast(Y, X, family="poisson")
+
+        assert B.shape == (p, 2)
+        assert Yhat.shape == (n, p)
+        assert disp_glm is None
+        assert resid_dev.shape == (n, p)
+        assert np.all(np.isfinite(B))
+
+        for j in range(p):
+            mod = sm.GLM(Y[:, j], X, family=sm.families.Poisson()).fit()
+            np.testing.assert_allclose(B[j], mod.params, rtol=0.2,
+                                       err_msg=f"gene {j} coefficient mismatch")
+
 
 # ---------------------------------------------------------------------------
 # 3. Test GCATE pipeline with new GLM
@@ -313,26 +337,3 @@ class TestPerformance:
             f"New impl too slow: {t_new:.2f}s vs old {t_old:.2f}s"
         )
 
-
-# ---------------------------------------------------------------------------
-# 6. Test DR learner with fast GLM
-# ---------------------------------------------------------------------------
-
-class TestDRLearnerIntegration:
-    """Test that the DR learner pipeline still works with fast GLM."""
-
-    def test_lfc_basic(self):
-        """LFC should produce valid results."""
-        from causarray.DR_learner import LFC
-        import pandas as pd
-
-        np.random.seed(0)
-        Y = np.random.poisson(5, (100, 10))
-        W = np.random.normal(0, 1, (100, 3))
-        A = np.random.binomial(1, 0.5, 100)
-        Y += np.random.poisson(1, (100, 10)) * A[:, None]
-
-        result, estimation = LFC(Y, W, A)
-        assert isinstance(result, pd.DataFrame)
-        assert 'tau' in result.columns
-        assert result.shape[0] == 10

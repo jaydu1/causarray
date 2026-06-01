@@ -1,9 +1,4 @@
-"""
-Unit tests for GCATE confounder estimation quality.
-
-Tests T1–T6 use simulated NB/Poisson data with known latent structure so
-that confounder recovery can be evaluated objectively.
-"""
+"""Unit tests for GCATE confounder estimation quality using simulated NB/Poisson data with known latent structure."""
 
 import numpy as np
 import pytest

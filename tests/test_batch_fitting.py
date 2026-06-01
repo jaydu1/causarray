@@ -48,52 +48,44 @@ def _make_data(n=200, p=40, a=6, intercept=True, seed=0, family='nb'):
 
 
 # ---------------------------------------------------------------------------
-# Tests: subsample_ctrl_cells
+# Tests: subsample utilities
 # ---------------------------------------------------------------------------
 
-def test_subsample_ctrl_cells_smaller_pool():
-    ctrl_idx = np.arange(500)
-    result = subsample_ctrl_cells(ctrl_idx, n_ctrl=2000, random_state=0)
-    np.testing.assert_array_equal(result, ctrl_idx)
+class TestSubsampleUtils:
+    def test_ctrl_cells_smaller_pool(self):
+        ctrl_idx = np.arange(500)
+        result = subsample_ctrl_cells(ctrl_idx, n_ctrl=2000, random_state=0)
+        np.testing.assert_array_equal(result, ctrl_idx)
 
+    def test_ctrl_cells_larger_pool(self):
+        ctrl_idx = np.arange(5000)
+        result = subsample_ctrl_cells(ctrl_idx, n_ctrl=2000, random_state=0)
+        assert result.shape == (2000,)
+        assert np.all(result[:-1] < result[1:]), "Result should be sorted"
+        assert np.all(np.isin(result, ctrl_idx)), "All indices should be in ctrl_idx"
 
-def test_subsample_ctrl_cells_larger_pool():
-    ctrl_idx = np.arange(5000)
-    result = subsample_ctrl_cells(ctrl_idx, n_ctrl=2000, random_state=0)
-    assert result.shape == (2000,)
-    assert np.all(result[:-1] < result[1:]), "Result should be sorted"
-    assert np.all(np.isin(result, ctrl_idx)), "All indices should be in ctrl_idx"
+    def test_ctrl_cells_reproducible(self):
+        ctrl_idx = np.arange(5000)
+        r1 = subsample_ctrl_cells(ctrl_idx, n_ctrl=1000, random_state=42)
+        r2 = subsample_ctrl_cells(ctrl_idx, n_ctrl=1000, random_state=42)
+        np.testing.assert_array_equal(r1, r2)
 
+    def test_pert_cells_within_budget(self):
+        pert_idx = np.arange(100)
+        result = subsample_pert_cells(pert_idx, max_cells=2000)
+        np.testing.assert_array_equal(result, pert_idx)
 
-def test_subsample_ctrl_cells_reproducible():
-    ctrl_idx = np.arange(5000)
-    r1 = subsample_ctrl_cells(ctrl_idx, n_ctrl=1000, random_state=42)
-    r2 = subsample_ctrl_cells(ctrl_idx, n_ctrl=1000, random_state=42)
-    np.testing.assert_array_equal(r1, r2)
+    def test_pert_cells_over_budget(self):
+        pert_idx = np.arange(4000)
+        result = subsample_pert_cells(pert_idx, max_cells=2000)
+        assert len(result) == 2000
+        assert np.all(result[:-1] < result[1:])
 
-
-# ---------------------------------------------------------------------------
-# Tests: subsample_pert_cells
-# ---------------------------------------------------------------------------
-
-def test_subsample_pert_cells_within_budget():
-    pert_idx = np.arange(100)
-    result = subsample_pert_cells(pert_idx, max_cells=2000)
-    np.testing.assert_array_equal(result, pert_idx)
-
-
-def test_subsample_pert_cells_over_budget():
-    pert_idx = np.arange(4000)
-    result = subsample_pert_cells(pert_idx, max_cells=2000)
-    assert len(result) == 2000
-    assert np.all(result[:-1] < result[1:])
-
-
-def test_subsample_pert_cells_no_cap():
-    """max_cells=None keeps all pert cells."""
-    pert_idx = np.arange(5000)
-    result = subsample_pert_cells(pert_idx, max_cells=None)
-    np.testing.assert_array_equal(result, pert_idx)
+    def test_pert_cells_no_cap(self):
+        """max_cells=None keeps all pert cells."""
+        pert_idx = np.arange(5000)
+        result = subsample_pert_cells(pert_idx, max_cells=None)
+        np.testing.assert_array_equal(result, pert_idx)
 
 
 # ---------------------------------------------------------------------------

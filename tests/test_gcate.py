@@ -96,37 +96,33 @@ def test_fit_gcate_near_singular_X():
 
 
 # ---------------------------------------------------------------------------
-# G10 – backend toggle propagates through gcate (module-qualified import)
+# Backend integration via fit_gcate
 # ---------------------------------------------------------------------------
 
-def test_g10_backend_toggle_propagates_through_fit_gcate():
-    """_USE_FAST_BACKEND=False must cause fit_gcate to use statsmodels path."""
-    np.random.seed(0)
-    n, p = 60, 20
-    Y = np.random.negative_binomial(5, 0.5, (n, p))
-    X = np.column_stack([np.ones(n), np.random.randn(n)])
-    A = np.random.binomial(1, 0.3, (n, 1)).astype(float)
+class TestBackendIntegration:
+    def test_backend_toggle_propagates_through_fit_gcate(self):
+        """_USE_FAST_BACKEND=False must cause fit_gcate to use statsmodels path."""
+        np.random.seed(0)
+        n, p = 60, 20
+        Y = np.random.negative_binomial(5, 0.5, (n, p))
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        A = np.random.binomial(1, 0.3, (n, 1)).astype(float)
 
-    with gcate_glm._backend_override("original"):
-        with patch.object(gcate_glm, "fit_glm", wraps=gcate_glm.fit_glm) as mock_fg:
-            fit_gcate(Y, X, A, r=1, family="nb", offset=False, backend="original")
-            assert mock_fg.called, (
-                "fit_glm (statsmodels) was not called despite backend='original'"
-            )
+        with gcate_glm._backend_override("original"):
+            with patch.object(gcate_glm, "fit_glm", wraps=gcate_glm.fit_glm) as mock_fg:
+                fit_gcate(Y, X, A, r=1, family="nb", offset=False, backend="original")
+                assert mock_fg.called, (
+                    "fit_glm (statsmodels) was not called despite backend='original'"
+                )
 
+    def test_backend_original_param_accepted(self):
+        """fit_gcate(..., backend='original') must complete and return dicts."""
+        np.random.seed(1)
+        n, p = 60, 20
+        Y = np.random.negative_binomial(5, 0.5, (n, p))
+        X = np.column_stack([np.ones(n), np.random.randn(n)])
+        A = np.random.binomial(1, 0.3, (n, 1)).astype(float)
 
-# ---------------------------------------------------------------------------
-# G9 – backend parameter accepted without error
-# ---------------------------------------------------------------------------
-
-def test_g9_fit_gcate_backend_original_small():
-    """fit_gcate(..., backend='original') must complete and return dicts."""
-    np.random.seed(1)
-    n, p = 60, 20
-    Y = np.random.negative_binomial(5, 0.5, (n, p))
-    X = np.column_stack([np.ones(n), np.random.randn(n)])
-    A = np.random.binomial(1, 0.3, (n, 1)).astype(float)
-
-    res_1, res_2 = fit_gcate(Y, X, A, r=1, family="nb", offset=False, backend="original")
-    assert isinstance(res_1, dict)
-    assert isinstance(res_2, dict)
+        res_1, res_2 = fit_gcate(Y, X, A, r=1, family="nb", offset=False, backend="original")
+        assert isinstance(res_1, dict)
+        assert isinstance(res_2, dict)
