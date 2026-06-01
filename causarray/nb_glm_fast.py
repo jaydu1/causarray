@@ -234,7 +234,8 @@ def fit_glm_fast(
             disp_glm=disp_glm, impute=impute, offset=offset,
             shrinkage=shrinkage, alpha=alpha, maxiter=maxiter,
             thres_disp=thres_disp, n_jobs=n_jobs,
-            random_state=random_state, verbose=verbose, **kwargs,
+            random_state=random_state, verbose=verbose,
+            mem_limit_gb=mem_limit_gb, **kwargs,
         )
 
     # Estimate dispersion for NB — use covariate-only design (X, not X_full)
@@ -261,6 +262,7 @@ def fit_glm_fast(
             Y_float, X, A, a, d, p, n, family, disp_glm,
             impute, X_test, offset_arr, offsets, maxiter, verbose,
             mem_limit_gb=mem_limit_gb, offset_test=offset_test,
+            random_state=random_state,
         )
 
     B, Yhat, disp_glm_out, resid_deviance = _fit_glm_fast_single(
@@ -371,7 +373,7 @@ def _fit_glm_fast_single(
 def _fit_glm_fast_per_perturbation(
     Y_float, X, A, a, d, p, n, family, disp_glm,
     impute, X_test, offset_arr, offsets, maxiter, verbose,
-    mem_limit_gb=None, offset_test=None,
+    mem_limit_gb=None, offset_test=None, random_state=0,
 ):
     """Per-perturbation GLM fitting with global covariate model.
 
@@ -417,7 +419,7 @@ def _fit_glm_fast_per_perturbation(
     if n <= _N_STAGE1:
         stage1_mask = np.ones(n, dtype=bool)
     else:
-        rng = np.random.default_rng(0)
+        rng = np.random.default_rng(random_state)
         stage1_idx = np.sort(rng.choice(n, size=_N_STAGE1, replace=False))
         stage1_mask = np.zeros(n, dtype=bool)
         stage1_mask[stage1_idx] = True
@@ -510,76 +512,75 @@ def _fit_glm_fast_per_perturbation(
         Yhat_0 = np.zeros((n_test, p, a), dtype=_impu_dtype)
         Yhat_1 = np.zeros((n_test, p, a), dtype=_impu_dtype)
 
-    # ── Stage 2: Joint treatment-effect fit ──────────────────────────────
-    # Single fit with design=A (n, a) over all cells.  For one-hot A the
-    # IRLS normal equations A^T W A are exactly block-diagonal: ctrl rows
-    # are all-zero so they contribute nothing to treatment coefficients, and
-    # each pert cell appears in exactly one column.  Estimates are therefore
-    # mathematically equivalent to the old sequential per-pert loop, but
-    # Y_float is read from RAM once instead of a times (~8× memory-bandwidth
-    # reduction).
-    A_float = A.astype(np.float64)
-
-    if family == "nb":
-        fitter_joint = NBGLMBatchFitter(
-            design=A_float,
-            offset=offset_arr,
-            max_iter=min(maxiter, 50),
-            poisson_init_iter=5,
-            dispersion_method="moments",
-            min_mu=_IRLS_MIN_MU,
-        )
-        result_joint = fitter_joint.fit_batch_with_joint_offsets(
-            Y_float,
-            covariate_offset=cov_offset_all,
-            fixed_dispersion=global_alpha,
-        )
-    elif family == "poisson":
-        fitter_joint = NBGLMBatchFitter(
-            design=A_float,
-            offset=offset_arr,
-            max_iter=min(maxiter, 50),
-            poisson_init_iter=10,
-            dispersion_method="moments",
-            min_mu=_IRLS_MIN_MU,
-        )
-        result_joint = fitter_joint.fit_batch_with_joint_offsets(
-            Y_float,
-            covariate_offset=cov_offset_all,
-        )
-
-    B_trt_all = result_joint.coef          # (p, a)
-    B_full[:, d:] = B_trt_all
-    joint_disp = result_joint.dispersion   # (p,); equals global_alpha when fixed
-
-    # Fitted values for all cells: ctrl rows recover Yhat_global exactly.
-    Yhat_joint = np.exp(np.clip(
-        A_float @ B_trt_all.T + cov_offset_all + offset_arr[:, None], -20, 20
-    ))  # (n, p)
-
-    # Per-pert bookkeeping: overwrite treated rows, accumulate dispersion,
-    # fill imputation arrays.  This loop is cheap — no GLM fitting.
+    # ── Stage 2: treatment-effect fit ───────────────────────────────────
+    # Future-dev note: a single joint fit over all treatment columns is only
+    # equivalent to this loop when A is raw 0/1 one-hot.  Some future callers
+    # may pass standardized or otherwise transformed treatment designs, where
+    # detecting one-hot structure from A itself would be unreliable.  Keep the
+    # historical per-perturbation GLM until raw assignment/support masks are
+    # carried alongside any transformed design.
     for k in range(a):
         pert_mask = A[:, k] == 1
-        n_sub_k = int(ctrl_mask.sum()) + int(pert_mask.sum())
+        cell_mask = ctrl_mask | pert_mask
+        n_sub = cell_mask.sum()
 
-        Yhat_full[pert_mask] = Yhat_joint[pert_mask]
+        A_k = A[cell_mask, k : k + 1]
+        Y_sub = Y_float[cell_mask]
+        offset_sub = offset_arr[cell_mask]
+        cov_offset_sub = cov_offset_all[cell_mask]
 
         if family == "nb":
-            resid_deviance[pert_mask] = _compute_nb_deviance_residuals(
-                Y_float[pert_mask], Yhat_joint[pert_mask], joint_disp
+            fitter = NBGLMBatchFitter(
+                design=A_k,
+                offset=offset_sub,
+                max_iter=min(maxiter, 50),
+                poisson_init_iter=5,
+                dispersion_method="moments",
+                min_mu=_IRLS_MIN_MU,
             )
-            disp_alpha += n_sub_k * joint_disp
-            disp_alpha_cells += n_sub_k
-        else:
-            resid_deviance[pert_mask] = _compute_poisson_deviance_residuals(
-                Y_float[pert_mask], Yhat_joint[pert_mask]
+            result = fitter.fit_batch_with_joint_offsets(
+                Y_sub,
+                covariate_offset=cov_offset_sub,
+                fixed_dispersion=global_alpha,
             )
+            B_trt_k = result.coef[:, 0]
+
+            eta_sub = A_k @ result.coef.T + cov_offset_sub + offset_sub[:, None]
+            Yhat_sub = np.exp(np.clip(eta_sub, -20, 20))
+            fitter_disp = result.dispersion
+            resid_sub = _compute_nb_deviance_residuals(Y_sub, Yhat_sub, fitter_disp)
+            disp_alpha += n_sub * fitter_disp
+            disp_alpha_cells += n_sub
+
+        elif family == "poisson":
+            fitter = NBGLMBatchFitter(
+                design=A_k,
+                offset=offset_sub,
+                max_iter=min(maxiter, 50),
+                poisson_init_iter=10,
+                dispersion_method="moments",
+                min_mu=_IRLS_MIN_MU,
+            )
+            result = fitter.fit_batch_with_joint_offsets(
+                Y_sub,
+                covariate_offset=cov_offset_sub,
+            )
+            B_trt_k = result.coef[:, 0]
+
+            eta_sub = A_k @ result.coef.T + cov_offset_sub + offset_sub[:, None]
+            Yhat_sub = np.exp(np.clip(eta_sub, -20, 20))
+            resid_sub = _compute_poisson_deviance_residuals(Y_sub, Yhat_sub)
+
+        B_full[:, d + k] = B_trt_k
+
+        treated_in_sub = np.where(cell_mask)[0][A_k[:, 0] == 1]
+        resid_deviance[treated_in_sub] = resid_sub[A_k[:, 0] == 1]
+        Yhat_full[treated_in_sub] = Yhat_sub[A_k[:, 0] == 1]
 
         if do_impute:
             Yhat_0[:, :, k] = Yhat_0_base
-            eta_1_test_k = eta_0_test + B_trt_all[:, k][None, :]
-            Yhat_1[:, :, k] = np.exp(np.clip(eta_1_test_k, -20, 20))
+            eta_1_test = eta_0_test + B_trt_k[None, :]
+            Yhat_1[:, :, k] = np.exp(np.clip(eta_1_test, -20, 20))
 
     if family == "nb":
         # Weighted average of alpha; convert to r = 1/alpha (causarray convention).

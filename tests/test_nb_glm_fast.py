@@ -13,6 +13,8 @@ Gaps covered:
   G13 – mem_limit_gb triggers float32 allocation in imputation arrays
   G14 – mem_limit_gb=None preserves default float64 allocation
   G15 – fit_glm_fast accepts and passes mem_limit_gb through **kwargs
+  G16 – multi-treatment Stage 2 uses per-perturbation GLMs, not joint fit
+  G17 – Stage-1 subsample honors caller random_state
 """
 from __future__ import annotations
 
@@ -336,6 +338,119 @@ class TestG4ControlResiduals:
 
 
 # ---------------------------------------------------------------------------
+# G16 – Stage 2 per-perturbation fallback
+# ---------------------------------------------------------------------------
+
+class TestG16PerPerturbationStage2:
+    def test_multi_treatment_uses_one_stage2_fit_per_perturbation(self):
+        """Multi-column A should use the historical per-perturbation GLM loop."""
+        if not gcate_glm._CRISPYX_AVAILABLE:
+            pytest.skip("crispyx not installed")
+
+        from causarray.nb_glm_fast import _fit_glm_fast_per_perturbation
+        from crispyx.glm import NBGLMBatchFitter
+
+        rng = np.random.default_rng(123)
+        n, p, a = 72, 10, 3
+        Y = rng.poisson(2.0, (n, p)).astype(np.float64)
+        X = np.ones((n, 1))
+        A = np.zeros((n, a))
+        for k in range(a):
+            A[18 + k * 12 : 18 + (k + 1) * 12, k] = 1
+
+        real = NBGLMBatchFitter.fit_batch_with_joint_offsets
+
+        def _spy(self, *args, **kwargs):
+            return real(self, *args, **kwargs)
+
+        with patch.object(
+            NBGLMBatchFitter,
+            "fit_batch_with_joint_offsets",
+            autospec=True,
+            side_effect=_spy,
+        ) as mock_fit:
+            _fit_glm_fast_per_perturbation(
+                Y, X, A, a=a, d=1, p=p, n=n,
+                family="poisson", disp_glm=None,
+                impute=False, X_test=None,
+                offset_arr=np.zeros(n),
+                offsets=None,
+                maxiter=3, verbose=False,
+            )
+
+        assert mock_fit.call_count == a
+
+
+# ---------------------------------------------------------------------------
+# G17 – Stage-1 subsample RNG
+# ---------------------------------------------------------------------------
+
+class TestG17Stage1RandomState:
+    def test_fit_glm_fast_passes_random_state_to_per_perturbation(self):
+        """Public fit_glm_fast must thread random_state into the multi-A path."""
+        if not gcate_glm._CRISPYX_AVAILABLE:
+            pytest.skip("crispyx not installed")
+
+        from causarray import nb_glm_fast as _nbgf
+
+        rng = np.random.default_rng(456)
+        n, p, a = 40, 5, 2
+        Y = rng.poisson(2.0, (n, p)).astype(np.float64)
+        X = np.ones((n, 1))
+        A = np.zeros((n, a))
+        A[10:20, 0] = 1
+        A[20:30, 1] = 1
+
+        observed = {}
+
+        def _stub(*args, **kwargs):
+            observed["random_state"] = kwargs.get("random_state")
+            _, _, _, a_arg, d_arg, p_arg, n_arg = args[:7]
+            return (
+                np.zeros((p_arg, d_arg + a_arg)),
+                np.zeros((n_arg, p_arg)),
+                None,
+                None,
+                np.zeros((n_arg, p_arg)),
+            )
+
+        with patch.object(_nbgf, "_fit_glm_fast_per_perturbation", side_effect=_stub):
+            _nbgf.fit_glm_fast(
+                Y, X, A=A, family="poisson", random_state=123,
+            )
+
+        assert observed["random_state"] == 123
+
+    def test_stage1_subsample_uses_caller_random_state(self):
+        """For n > 3000, Stage-1 sampling must seed from random_state."""
+        if not gcate_glm._CRISPYX_AVAILABLE:
+            pytest.skip("crispyx not installed")
+
+        from causarray.nb_glm_fast import _fit_glm_fast_per_perturbation
+
+        rng = np.random.default_rng(321)
+        n, p, a = 3001, 2, 2
+        Y = rng.poisson(2.0, (n, p)).astype(np.float64)
+        X = np.ones((n, 1))
+        A = np.zeros((n, a))
+        A[1000:2000, 0] = 1
+        A[2000:, 1] = 1
+
+        with patch("numpy.random.default_rng", wraps=np.random.default_rng) as mock_rng:
+            _fit_glm_fast_per_perturbation(
+                Y, X, A, a=a, d=1, p=p, n=n,
+                family="poisson", disp_glm=None,
+                impute=False, X_test=None,
+                offset_arr=np.zeros(n),
+                offsets=None,
+                maxiter=1, verbose=False,
+                random_state=123,
+            )
+
+        assert any(call.args == (123,) for call in mock_rng.call_args_list)
+
+
+# ---------------------------------------------------------------------------
 # G13 – mem_limit_gb triggers float32 imputation arrays
 # ---------------------------------------------------------------------------
 
@@ -613,4 +728,3 @@ class TestG15CrossFittingMemLimit:
             f"mem_limit_gb={observed.get('mem_limit_gb')!r}; "
             f"expected {tiny_limit!r}."
         )
-
