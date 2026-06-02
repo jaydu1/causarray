@@ -103,4 +103,4 @@ rmarkdown::render("perturbseq.Rmd", rmarkdown::md_document(variant = "markdown_g
 
 
 ## References
-[Du25] Jin-Hong Du, Maya Shen, Hansruedi Mathys, and Kathryn Roeder (2025). Causal differential expression analysis under unmeasured confounders with causarray. bioRxiv, 2025-01.
+[Du25] Jin-Hong Du, Maya Shen, Hansruedi Mathys, and Kathryn Roeder. "Uncovering causal relationships in single cell omic studies with causarray". In: Briefings in Bioinformatics (2026).
