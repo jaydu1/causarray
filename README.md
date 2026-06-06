@@ -5,7 +5,7 @@
 
 # causarray
 
-Advances in single-cell sequencing and CRISPR technologies have enabled detailed case-control comparisons and experimental perturbations at single-cell resolution. However, uncovering causal relationships in observational genomic data remains challenging due to selection bias and inadequate adjustment for unmeasured confounders, particularly in heterogeneous datasets. To address these challenges, we introduce `causarray` [Du25], a doubly robust causal inference framework for analyzing array-based genomic data at both bulk-cell and single-cell levels. `causarray` integrates a generalized confounder adjustment method to account for unmeasured confounders and employs semiparametric inference with ﬂexible machine learning techniques to ensure robust statistical estimation of treatment effects.
+Advances in single-cell sequencing and CRISPR technologies have enabled detailed case-control comparisons and experimental perturbations at single-cell resolution. However, uncovering causal relationships in observational genomic data remains challenging due to selection bias and inadequate adjustment for unmeasured confounders, particularly in heterogeneous datasets. To address these challenges, we introduce `causarray` [Du26], a doubly robust causal inference framework for analyzing array-based genomic data at both bulk-cell and single-cell levels. `causarray` integrates a generalized confounder adjustment method to account for unmeasured confounders and employs semiparametric inference with ﬂexible machine learning techniques to ensure robust statistical estimation of treatment effects.
 
 
 ## Usage
@@ -34,10 +34,19 @@ The documentation and tutorials using both `Python` and `R` are available at [ca
 
 
 
-## Batch fitting for large-scale screens
+## Tutorials
 
-For screens with hundreds to thousands of perturbations, use the batch API
-so that peak memory is bounded by one batch at a time:
+| Tutorial | Language | Description | Link |
+|----------|----------|-------------|------|
+| Perturb-seq [Jin20] | Python | CRISPR screen analysis on excitatory neurons | [Notebook](https://causarray.readthedocs.io/en/latest/tutorial/perturbseq/perturbseq-py.html) |
+| Perturb-seq [Jin20] | R | Same analysis using `reticulate` | [Notebook](https://causarray.readthedocs.io/en/latest/tutorial/perturbseq/perturbseq-r.html) |
+| Genome-wide CRISPRi screen [Replogle22] | Python | Batch fitting on 200 perturbations from a K562 genome-wide CRISPRi screen | [Notebook](https://causarray.readthedocs.io/en/latest/tutorial/replogle/replogle-py.html) |
+| Case-control: SEA-AD [Gabitto24] | Python | Causal inference on observational single-cell data (Alzheimer's disease) | [Notebook](https://causarray.readthedocs.io/en/latest/tutorial/case_control/sea_ad_case_control.html) |
+
+### Batch fitting API
+
+For screens with hundreds to thousands of perturbations, use `gcate_lfc_batch` so
+that peak memory is bounded by one batch at a time:
 
 ```python
 from causarray import gcate_lfc_batch
@@ -52,16 +61,12 @@ df_res = gcate_lfc_batch(
 )
 ```
 
-See the [Replogle-E-K562 tutorial](https://causarray.readthedocs.io/en/latest/)
+See the [Replogle-E-K562 tutorial](https://causarray.readthedocs.io/en/latest/tutorial/replogle/replogle-py.html)
 for a demonstration on 200 perturbations from a genome-wide CRISPRi screen.
 
 ## Changelog
 
-- [x] (2025-01-30) Python package released on PyPI
-- [x] (2025-02-01) Code for reproducing figures in paper
-- [x] (2025-02-02) Tutorial for Python and R
-- [x] (2026-05-31) Batch fitting API (`gcate_lfc_batch`) for large-scale screens
-- [x] (2026-05-31) Documentation at [causarray.readthedocs.io](https://causarray.readthedocs.io/en/latest/)
+See [CHANGELOG](https://causarray.readthedocs.io/en/latest/changelog.html) for a full version history.
 
 
 <!-- 
@@ -103,4 +108,10 @@ rmarkdown::render("perturbseq.Rmd", rmarkdown::md_document(variant = "markdown_g
 
 
 ## References
-[Du25] Jin-Hong Du, Maya Shen, Hansruedi Mathys, and Kathryn Roeder. "Uncovering causal relationships in single cell omic studies with causarray". In: Briefings in Bioinformatics (2026).
+[Du26] Jin-Hong Du, Maya Shen, Hansruedi Mathys, and Kathryn Roeder. "Uncovering causal relationships in single cell omic studies with causarray". In: Briefings in Bioinformatics (2026).
+
+[Gabitto24] Mariano I. Gabitto et al. "Integrated multimodal cell atlas of Alzheimer's disease". In: Nature Neuroscience (2024).
+
+[Jin20] Xin Jin et al. "In vivo Perturb-seq reveals neuronal and glial abnormalities associated with autism risk genes". In: Nature Neuroscience (2020).
+
+[Replogle22] Joseph M. Replogle et al. "Mapping information-rich genotype-phenotype landscapes with genome-scale Perturb-seq". In: Cell (2022).
