@@ -33,6 +33,7 @@ causarray is a Python module for simultaneous causal inference with an array of 
 
    tutorial/perturbseq/perturbseq-py.ipynb
    tutorial/replogle/replogle-py.ipynb
+   tutorial/case_control/sea_ad_case_control.ipynb
 
 .. toctree::
    :maxdepth: 1
