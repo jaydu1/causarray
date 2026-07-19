@@ -30,24 +30,18 @@ library(Seurat)
     ##     intersect
 
 ``` r
-library(caret)
-```
-
-    ## Loading required package: ggplot2
-
-    ## Loading required package: lattice
-
-``` r
 sc.seurat <- readRDS("perturbseq-exneu.rds")
 
-Y <- data.frame(t(as.matrix(sc.seurat[['RNA']]$counts))) # cell-by-gene matrix
+Y <- data.frame(t(as.matrix(GetAssayData(sc.seurat, assay = "RNA", layer = "counts")))) # cell-by-gene matrix
 metadata <- sc.seurat@meta.data
 
 perturb <- metadata
 colnames(perturb) <- gsub("Perturbation", "trt_", colnames(perturb))
 perturb$trt_ <- relevel(as.factor(perturb$trt_), ref = "GFP")
-dmy <- dummyVars(" ~ trt_", data = perturb)
-A <- data.frame(predict(dmy, newdata = perturb))[,-1] # cell-by-trt matrix
+A <- data.frame(
+  model.matrix(~ trt_ - 1, data = perturb)[, -1, drop = FALSE],
+  check.names = FALSE
+) # cell-by-trt matrix; remove the first (GFP control) column
 ```
 
 For running causarray, we require the following inputs:
@@ -75,7 +69,7 @@ causarray <- import("causarray")
 cat(causarray$`__version__`)
 ```
 
-    ## 0.0.6
+    ## 0.0.7
 
 ``` r
 # (Y, A) should be either data.frame or matrix
@@ -138,11 +132,14 @@ U <- res_gate[[2]]$U
 ```
 
 Next, we apply causarray to estimate the causal effects of perturbations
-on gene expression.
+on gene expression. We use unequal (Welch) variance because treatment and
+control cells can have different pseudo-outcome variability; pooling those
+variances can be anti-conservative in a perturbation screen.
 
 ``` r
 offsets <- log(res_gate[[2]][['kwargs_glm']][['size_factor']]) # use the precomputed size factors
-res <- causarray$LFC(Y, cbind(X, U), A, cbind(X_A, U), offset=offsets, verbose=TRUE)
+res <- causarray$LFC(Y, cbind(X, U), A, cbind(X_A, U), offset=offsets,
+                    usevar="unequal", verbose=TRUE)
 ```
 
     ## 'Estimating LFC...'
