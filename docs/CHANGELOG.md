@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.0.7] - 2026-07-18
+
+### Added
+
+- `estimate_propensity_scores()` estimates in-sample or out-of-fold treatment
+  probabilities without rerunning the outcome model.
+- `summarize_propensity_scores()` and `plot_propensity_scores()` report and
+  visualize common support, tail mass, and inverse-weight effective sample size.
+- `LFC()` now returns both clipped `pi_hat` and diagnostic `pi_hat_raw` scores.
+- `LFC()` results include raw AIPW `mean_control`, `mean_treated`, and
+  `estimable` diagnostics.
+- Propensity and latent-factor association diagnostics in the Perturb-seq
+  tutorial.
+
+### Changed
+
+- `estimate_propensity_scores()` now defaults to class-balanced logistic
+  weighting, matching `LFC()` and historical causarray behavior. Pass
+  `class_weight=None` explicitly for calibrated treatment probabilities.
+
+### Fixed
+
+- `LFC()` now always uses standard, unclipped AIPW pseudo-outcomes while
+  retaining its established class-balanced propensity nuisance fit to limit
+  unrelated result drift. This removes directional bias from clipping negative
+  cell-level influence-function values under treatment-group imbalance.
+  Calibrated scores remain available with `ps_class_weight=None`; the legacy
+  cell-level clipping option has been removed.
+- Valid aggregate counterfactual means are floored only for the final log-ratio
+  and delta-method calculation, after averaging the unchanged pseudo-outcomes.
+- Nonfinite or nonpositive aggregate counterfactual means are reported as
+  non-estimable rather than silently floored before taking a log ratio.
+- `cross_est=True` now enables two-fold nuisance cross-fitting, with an explicit
+  `K` taking precedence.
+- Intercept-only propensity models now respect the requested class weighting:
+  balanced fits return 0.5 and unweighted fits return the case prevalence.
+  Masks are indexed correctly within cross-fitting folds.
+
 ## [0.0.6] - 2026-05-31
 
 ### Added
