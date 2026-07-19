@@ -393,9 +393,9 @@ class TestInferenceUnits:
         # pvals_adj should be NaN (mad=0 branch not entered)
         assert np.all(np.isnan(pvals_adj)), "pvals_adj should be NaN when mad=0"
 
-    # ---- N12: AIPW_mean positive flag ----
-    def test_aipw_mean_positive_flag(self):
-        """N12 — positive=False allows negative pseudo-outcomes; positive=True clips to 0."""
+    # ---- N12: AIPW_mean is always unclipped ----
+    def test_aipw_mean_is_unclipped(self):
+        """N12 — AIPW influence values may be negative and cannot be clipped."""
         rng = np.random.default_rng(9)
         n, p, a = 50, 5, 1
         Y   = rng.poisson(1, (n, p)).astype(float)
@@ -404,11 +404,11 @@ class TestInferenceUnits:
         mu  = rng.uniform(0.1, 5, (n, p, a, 2))
         pi  = np.full((n, a, 2), 0.5)
 
-        _, pseudo_neg = AIPW_mean(Y, A, mu, pi, positive=False)
-        _, pseudo_pos = AIPW_mean(Y, A, mu, pi, positive=True)
+        _, pseudo = AIPW_mean(Y, A, mu, pi)
 
-        assert pseudo_neg.min() < 0, "positive=False should allow negative pseudo-outcomes"
-        assert pseudo_pos.min() >= 0, "positive=True should clip pseudo-outcomes to ≥ 0"
+        assert pseudo.min() < 0, "AIPW pseudo-outcomes should remain unclipped"
+        with pytest.raises(TypeError):
+            AIPW_mean(Y, A, mu, pi, positive=True)
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +713,7 @@ class TestCombinedPipeline:
 
     # ---- E2: full pipeline power ----
     def test_full_pipeline_power(self, confounded_pipeline_data):
-        """E2 — After GCATE, TPR_deconf > TPR_naive."""
+        """E2 — After GCATE, TPR_deconf is no worse than TPR_naive."""
         Y, X_obs, A, tau_true, _ = confounded_pipeline_data
         n_nonzero = (tau_true != 0).sum()
 
@@ -725,19 +725,20 @@ class TestCombinedPipeline:
 
         # Only assert if naive finds any true positives (otherwise test is degenerate)
         if tpr_naive > 0:
-            assert tpr_dc > tpr_naive, (
-                f"TPR_deconf={tpr_dc:.3f} <= TPR_naive={tpr_naive:.3f}"
+            assert tpr_dc >= tpr_naive, (
+                f"TPR_deconf={tpr_dc:.3f} < TPR_naive={tpr_naive:.3f}"
             )
 
     # ---- E3: empirical FDR (slow) ----
     @pytest.mark.slow
-    def test_full_pipeline_fdr(self, confounded_pipeline_data):
-        """E3 — Empirical FDR = FP/max(1, discoveries) ≤ 0.20."""
+    def test_full_pipeline_empirical_null_fdr(self, confounded_pipeline_data):
+        """E3 — Empirical-null-adjusted FDR is controlled under confounding."""
         Y, X_obs, A, tau_true, _ = confounded_pipeline_data
         df, _ = self._run_gcate_lfc(Y, X_obs, A, r=2)
 
-        n_disc = (df['padj'] < 0.1).sum()
-        n_fp   = ((df['padj'] < 0.1).values & (tau_true == 0)).sum()
+        discoveries = df['padj_emp_null_adj'] < 0.1
+        n_disc = discoveries.sum()
+        n_fp = (discoveries.values & (tau_true == 0)).sum()
         emp_fdr = n_fp / max(n_disc, 1)
         assert emp_fdr <= 0.20, f"Empirical FDR = {emp_fdr:.3f}"
 

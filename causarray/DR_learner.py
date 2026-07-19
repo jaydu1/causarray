@@ -1,6 +1,8 @@
 import numpy as np
 import contextlib
 import pandas as pd
+import warnings
+from typing import Literal
 from causarray.DR_estimation import AIPW_mean, cross_fitting
 from causarray.gcate_glm import loess_fit, ls_fit
 import causarray.gcate_glm as _gcate_glm  # for _backend_override
@@ -14,7 +16,9 @@ def compute_causal_estimand(
     Y, W, A, W_A=None, family='nb', offset=False,
     Y_hat=None, pi_hat=None, mask=None,
     fdx=False, fdx_B=1000, fdx_alpha=0.05, fdx_c=0.1,
-    verbose=False, random_state=0, backend: str = "auto", **kwargs):
+    verbose=False, random_state=0, backend: str = "auto", K=1,
+    ps_clip=(0.01, 0.99), ps_class_weight='balanced',
+    **kwargs):
     """Estimate causal treatment effects using AIPW with a user-supplied estimand.
 
     Parameters
@@ -42,9 +46,17 @@ def compute_causal_estimand(
     pi_hat : array or None, shape (n, a)
         Pre-computed propensity scores.  When provided, propensity fitting is
         skipped.
+    K : int
+        Number of folds used for nuisance estimation.  The default ``1``
+        preserves in-sample fitting.
+    ps_clip : tuple(float, float)
+        Bounds applied to propensity scores used by AIPW.
+    ps_class_weight : str, dict or None
+        Class weighting for the propensity model. ``'balanced'`` preserves the
+        established nuisance fit; pass ``None`` for calibrated probabilities.
     mask : array or None, shape (n, a)
-        Boolean mask indicating which cells are used for the final estimand
-        computation.  Does not affect cross-fitting or propensity estimation.
+        Boolean mask indicating eligible cells for each treatment. It limits
+        propensity-model fitting and final estimand computation.
     fdx : bool
         Whether to apply FDX control (``P(FDP > fdx_c) < fdx_alpha``).
     fdx_B : int
@@ -64,11 +76,16 @@ def compute_causal_estimand(
     Returns
     -------
     df_res : DataFrame
-        Test results with columns ``gene_names``, ``tau``, ``std``, ``stat``,
-        ``rej``, ``pvalue``, ``padj``, ``pvalue_emp_null_adj``,
-        ``padj_emp_null_adj`` (and ``trt`` when ``A`` has multiple columns).
+        Test results produced by ``estimand``. An estimand may optionally return
+        a fifth dictionary whose arrays are added as diagnostic columns.
     """
     reset_random_seeds(random_state)
+
+    if 'clip_pseudo_outcomes' in kwargs:
+        raise TypeError(
+            'clip_pseudo_outcomes has been removed; AIPW pseudo-outcomes are '
+            'always left unclipped'
+        )
 
     ctx = _gcate_glm._backend_override(backend) if backend != "auto" else contextlib.nullcontext()
 
@@ -85,7 +102,6 @@ def compute_causal_estimand(
     _mem_limit = kwargs.get('mem_limit_gb', None)
     _use_f32 = _mem_limit is not None and _yhat_gb > _mem_limit
     if _use_f32:
-        import warnings
         warnings.warn(
             f"AIPW intermediate Y ({_yhat_gb:.1f} GB as float64) exceeds "
             f"mem_limit_gb={_mem_limit} GB; downcasting Y, A, and pi_hat to "
@@ -94,6 +110,8 @@ def compute_causal_estimand(
         )
     Y = Y.astype(np.float32 if _use_f32 else float)
     n, p = Y.shape
+    if not np.all(np.isfinite(Y)):
+        raise ValueError('Y must contain only finite values')
 
     if len(A.shape) == 1:
         A = A.reshape(-1,1)
@@ -135,11 +153,25 @@ def compute_causal_estimand(
     else:
         offset = None
         size_factors = np.ones(n)
+    size_factors = np.asarray(size_factors, dtype=float)
+    if size_factors.shape != (n,) or not np.all(np.isfinite(size_factors)) or np.any(size_factors <= 0):
+        raise ValueError('Size factors must be finite, positive, and have length n')
     
     with ctx:
-        Y_hat, pi_hat = cross_fitting(Y, A, W, W_A, family=family, offset=offset,
-            Y_hat=Y_hat, pi_hat=pi_hat, mask=mask, random_state=random_state, verbose=verbose, **kwargs)
+        Y_hat, pi_hat, pi_hat_raw = cross_fitting(
+            Y, A, W, W_A, family=family, K=K, offset=offset,
+            Y_hat=Y_hat, pi_hat=pi_hat, mask=mask, ps_clip=ps_clip,
+            ps_class_weight=ps_class_weight,
+            return_raw_pi=True, random_state=random_state, verbose=verbose,
+            **kwargs,
+        )
     pi_hat = pi_hat.reshape(*A.shape)
+    if not np.all(np.isfinite(Y_hat)):
+        raise ValueError('Outcome-model predictions must contain only finite values')
+    if not np.all(np.isfinite(pi_hat)) or np.any((pi_hat <= 0) | (pi_hat >= 1)):
+        raise ValueError(
+            'Propensity scores used by AIPW must be finite and strictly between 0 and 1; '
+            'pass ps_clip bounds or provide valid pi_hat values')
 
     if verbose: pprint.pprint('Estimating AIPW mean...')
     _aipw_dtype = Y_hat.dtype if _use_f32 else None
@@ -147,8 +179,12 @@ def compute_causal_estimand(
     pi_hat_aipw = pi_hat.astype(_aipw_dtype) if _aipw_dtype is not None else pi_hat
 
     # point estimation of the treatment effect
-    _, etas = AIPW_mean(Y, np.stack([1-A_aipw, A_aipw], axis=-1),
-        Y_hat, np.stack([1-pi_hat_aipw, pi_hat_aipw], axis=-1), positive=True)
+    _, etas = AIPW_mean(
+        Y,
+        np.stack([1-A_aipw, A_aipw], axis=-1),
+        Y_hat,
+        np.stack([1-pi_hat_aipw, pi_hat_aipw], axis=-1),
+    )
 
     # normalize the influence function values
     etas /= size_factors[:,None,None,None]
@@ -165,6 +201,7 @@ def compute_causal_estimand(
         _ret = estimand(etas[i_cells,:,j], A[i_cells,j], **kwargs)
         eta_est, tau_est, var_est = _ret[:3]
         df_est = _ret[3] if len(_ret) > 3 else None
+        estimand_info = _ret[4] if len(_ret) > 4 else None
 
         std_est = np.sqrt(var_est)
         tvalues_init = tau_est / std_est
@@ -187,20 +224,41 @@ def compute_causal_estimand(
             'pvalue_emp_null_adj': pvals_adj,
             'padj_emp_null_adj': qvals_adj,            
             })
+        if estimand_info is not None:
+            for name, values in estimand_info.items():
+                df_res[name] = values
+            n_nonestimable = int(np.sum(~np.asarray(estimand_info['estimable'], dtype=bool)))
+            if n_nonestimable:
+                treatment = trt_names[j] if A.shape[1] > 1 else 0
+                warnings.warn(
+                    f'{n_nonestimable} gene(s) for treatment {treatment!r} have '
+                    'nonfinite or nonpositive AIPW counterfactual means and are '
+                    'reported as non-estimable.',
+                    RuntimeWarning, stacklevel=2,
+                )
         if A.shape[1]>1:
             df_res['trt'] = trt_names[j]
         res.append(df_res)
     df_res = pd.concat(res, axis=0).reset_index(drop=True)
-    estimation = {**{'pi_hat':pi_hat, 'Y_hat':Y_hat, 'offset':offset, 'size_factors':size_factors}, **kwargs}
+    estimation = {**{
+        'pi_hat': pi_hat,
+        'pi_hat_raw': pi_hat_raw,
+        'Y_hat': Y_hat,
+        'offset': offset,
+        'size_factors': size_factors,
+        'ps_class_weight': ps_class_weight,
+    }, **kwargs}
     return df_res, estimation
 
 
 def LFC(
     Y, W, A, W_A=None, family='nb', offset=False,
-    Y_hat=None, pi_hat=None, cross_est=False, mask=None, usevar='unequal',
+    Y_hat=None, pi_hat=None, cross_est=False, K=None, mask=None,
+    usevar: Literal['unequal', 'pooled'] = 'unequal',
     thres_min=1e-2, thres_diff=1e-2, eps_var=1e-4,
     fdx=False, fdx_alpha=0.05, fdx_c=0.1,
-    verbose=False, backend: str = "auto", **kwargs):
+    verbose=False, backend: str = "auto", ps_clip=(0.01, 0.99),
+    ps_class_weight='balanced', **kwargs):
     """Estimate log-fold changes of treatment effects (LFCs) using AIPW.
 
     Fits a doubly-robust AIPW estimator for the log-ratio of counterfactual
@@ -230,17 +288,38 @@ def LFC(
         Pre-computed propensity scores.  When provided, propensity fitting is
         skipped.
     cross_est : bool
-        Whether to use cross-estimation for nuisance parameters.
+        Whether to use two-fold cross-estimation for nuisance parameters.
+        An explicit ``K`` takes precedence.
+    K : int or None
+        Number of nuisance-estimation folds.  ``None`` uses 2 when
+        ``cross_est=True`` and 1 otherwise.
     mask : array or None, shape (n, a)
-        Boolean mask indicating which cells are used for the final estimand
-        computation.  Does not affect cross-fitting or propensity estimation.
+        Boolean mask indicating eligible cells for each treatment. It limits
+        propensity-model fitting and final estimand computation.
     usevar : str
         Variance estimator for the AIPW pseudo-outcomes:
 
         * ``'unequal'`` (default, v0.0.6+): Welch variance
           ``s₀²/n₀ + s₁²/n₁`` with Welch-Satterthwaite degrees of
-          freedom; p-values use the t-distribution.
+          freedom; p-values use the t-distribution. This is the recommended
+          choice for perturbation screens and for case-control, bulk, and
+          donor-level pseudo-bulk analyses. Independence of the rows does not
+          imply equal treatment-arm variances, and biological heterogeneity or
+          unequal effective sample sizes can make pooled inference
+          anti-conservative.
         * ``'pooled'``: pooled-variance estimator ``(s² + eps_var) / n``.
+          Treat this as an opt-in sensitivity or legacy analysis, not as the
+          default for small case-control studies. Use it only when equal arm
+          variances have a strong scientific and empirical justification.
+          Pooled inference can produce substantially smaller standard errors
+          and many more discoveries; donor-level independence alone is not a
+          justification for pooling.
+
+        ``'unequal'`` accommodates arm-specific variance but does not model
+        within-donor or within-subject correlation. Repeated cells from the
+        same biological unit should still be pseudo-bulked or analyzed with a
+        cluster-aware method; changing ``usevar`` alone does not remove
+        pseudoreplication.
 
         .. versionchanged:: 0.0.6
             Default changed from ``'pooled'`` to ``'unequal'``.  The
@@ -267,25 +346,41 @@ def LFC(
     backend : str
         GLM backend: ``"auto"`` (default), ``"fast"`` (force crispyx),
         or ``"original"`` (force statsmodels).
+    ps_clip : tuple(float, float)
+        Bounds applied to propensity scores used by AIPW. Raw, unclipped scores
+        remain available as ``estimation['pi_hat_raw']``.
+    ps_class_weight : str, dict or None
+        Class weighting for the propensity model. ``'balanced'`` remains the
+        default to limit nuisance-model drift; pass ``None`` for calibrated
+        probabilities.
     **kwargs
         Additional arguments forwarded to the GLM fitting functions.
 
     Returns
     -------
     df_res : DataFrame
-        Test results with columns ``gene_names``, ``tau``, ``std``, ``stat``,
-        ``rej``, ``pvalue``, ``padj``, ``pvalue_emp_null_adj``,
-        ``padj_emp_null_adj`` (and ``trt`` when ``A`` has multiple columns).
+        Test results with effect estimates and inference columns, raw
+        ``mean_control`` and ``mean_treated`` counterfactual means, and an
+        ``estimable`` flag (plus ``trt`` for multiple treatments).
     """
 
     def estimand(etas, A, **kwargs):
         eta_0, eta_1 = etas[..., 0], etas[..., 1]
-        tau_0, tau_1 = np.mean(eta_0, axis=0), np.mean(eta_1, axis=0)
+        mean_0 = np.mean(eta_0, axis=0, dtype=np.float64)
+        mean_1 = np.mean(eta_1, axis=0, dtype=np.float64)
+        finite_means = np.isfinite(mean_0) & np.isfinite(mean_1)
+        estimable = finite_means & (mean_0 > 0) & (mean_1 > 0)
 
-        tau_1 = np.clip(tau_1, thres_diff, None)
-        tau_0 = np.clip(tau_0, thres_diff, None)
-        tau_est = np.log(tau_1/tau_0)
-        eta_est = eta_1 / tau_1[None,:] -  eta_0 / tau_0[None,:]
+        # Apply the count-mean parameter-space constraint only after averaging
+        # the unmodified AIPW pseudo-outcomes.  The floor makes the logarithm
+        # and its delta-method denominator numerically safe.  Nonpositive raw
+        # means remain non-estimable and are filtered below, so this safeguard
+        # cannot turn an invalid aggregate into a discovery.
+        tau_0 = np.where(estimable, np.maximum(mean_0, thres_diff), 1.0)
+        tau_1 = np.where(estimable, np.maximum(mean_1, thres_diff), 1.0)
+        with np.errstate(invalid='ignore', divide='ignore', over='ignore'):
+            tau_est = np.log(tau_1/tau_0)
+            eta_est = eta_1 / tau_1[None,:] - eta_0 / tau_0[None,:]
 
         df_eff = None
         if usevar == 'pooled':
@@ -316,8 +411,13 @@ def LFC(
         else:
             raise ValueError('usevar must be either "pooled" or "unequal"')
 
-        # filter out low-expressed genes
-        idx = (np.maximum(np.abs(tau_0),np.abs(tau_1))<thres_min) | (np.abs(tau_1-tau_0)<thres_diff)
+        # Filter on the raw aggregate estimates, not on cell-level projections
+        # or the numerical floor used for the log transform.
+        idx = (
+            ~estimable |
+            (np.maximum(mean_0, mean_1) < thres_min) |
+            (np.abs(mean_1 - mean_0) < thres_diff)
+        )
         tau_est[idx] = 0.; eta_est[:,idx] = 0.; var_est[idx] = np.inf
         if df_eff is not None:
             df_eff[idx] = np.nan
@@ -338,13 +438,22 @@ def LFC(
                     RuntimeWarning, stacklevel=3,
                 )
 
-        return eta_est, tau_est, var_est, df_eff
+        info = {
+            'mean_control': mean_0,
+            'mean_treated': mean_1,
+            'estimable': estimable,
+        }
+        return eta_est, tau_est, var_est, df_eff, info
+
+    if K is None:
+        K = 2 if cross_est else 1
 
     return compute_causal_estimand(
         estimand, Y, W, A, W_A, family, offset,    
         Y_hat=Y_hat, pi_hat=pi_hat, mask=mask,
         fdx=fdx, fdx_alpha=fdx_alpha, fdx_c=fdx_c,
-        verbose=verbose, backend=backend, **kwargs)
+        verbose=verbose, backend=backend, K=K, ps_clip=ps_clip,
+        ps_class_weight=ps_class_weight, **kwargs)
 
 
 
@@ -524,7 +633,11 @@ def gcate_lfc_batch(
 
     lfc_kwargs : dict or None
         Extra keyword arguments forwarded to :func:`LFC`
-        (e.g. ``usevar``, ``fdx``, ``thres_min``).
+        (e.g. ``usevar``, ``fdx``, ``thres_min``). Retain the default
+        ``usevar='unequal'`` for perturbation screens and for case-control,
+        bulk, or pseudo-bulk analyses. Pass
+        ``lfc_kwargs=dict(usevar='pooled')`` only for a deliberately justified
+        equal-variance sensitivity or legacy analysis.
     **kwargs
         Additional arguments forwarded to both :func:`fit_gcate_batch` and
         :func:`LFC`.  When a key collides with ``gcate_kwargs`` /

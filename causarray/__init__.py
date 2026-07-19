@@ -10,10 +10,14 @@ __all__ = [
     'LFC', 'gcate_lfc_batch', 'LFC_batch',
     'fit_glm', 'fit_glm_fast', 'fit_glm_ondisk',
     'reset_random_seeds', 'fit_gcate', 'fit_gcate_batch',
+    'estimate_propensity_scores', 'summarize_propensity_scores',
+    'plot_propensity_scores',
     ]
 
 
 from causarray.DR_learner import LFC, gcate_lfc_batch, LFC_batch  # ATE, SATE, FC
+from causarray.DR_estimation import estimate_propensity_scores
+from causarray.diagnostics import summarize_propensity_scores, plot_propensity_scores
 from causarray.gcate_glm import fit_glm
 from causarray.nb_glm_fast import fit_glm_fast, fit_glm_ondisk
 from causarray.utils import prep_causarray_data, reset_random_seeds, comp_size_factor

@@ -9,6 +9,7 @@ from causarray.utils import _filter_params
 from joblib import Parallel, delayed
 from tqdm import tqdm
 import pprint
+import warnings
 
 from sklearn.model_selection import KFold, ShuffleSplit
 
@@ -18,13 +19,18 @@ def _get_func_ps(ps_model, **kwargs):
         func_ps = lambda X, Y, X_test:fit_rf_ind_ps(X, Y[:,None], X_test=X_test, **params_ps)[:,0]
     elif ps_model=='logistic':
         clf_ps = LogisticRegression
-        kwargs = {**{'fit_intercept':False, 'C':1e0, 'class_weight':'balanced', 'random_state':0}, **kwargs}
+        kwargs = {**{'fit_intercept':False, 'C':1e0, 'class_weight':None, 'random_state':0}, **kwargs}
         params_ps = _filter_params(clf_ps().get_params(), kwargs)
         func_ps = lambda X, Y, X_test: clf_ps(**params_ps).fit(X, Y).predict_proba(X_test)[:,1]
     elif ps_model=='ensemble':
+        kwargs = dict(kwargs)
+        logistic_class_weight = kwargs.pop('class_weight', None)
         params_ps_rf = _filter_params(fit_rf, kwargs)
         clf_ps = LogisticRegression
-        kwargs = {**{'fit_intercept':False, 'C':1e0, 'class_weight':'balanced', 'random_state':0}, **kwargs}
+        kwargs = {**{
+            'fit_intercept': False, 'C': 1e0,
+            'class_weight': logistic_class_weight, 'random_state': 0,
+        }, **kwargs}
         params_ps_lr = _filter_params(clf_ps().get_params(), kwargs)
         params_ps = {'params_ps_rf':params_ps_rf, 'params_ps_lr':params_ps_lr}
         func_ps = lambda X, Y, X_test:(fit_rf_ind(X, Y[:,None], X_test=X_test, **params_ps_rf)[:,0] + clf_ps(**params_ps_lr).fit(X, Y).predict_proba(X_test)[:,1])/2
@@ -34,10 +40,149 @@ def _get_func_ps(ps_model, **kwargs):
     return func_ps, params_ps
 
 
+def estimate_propensity_scores(
+    A, X_A, K=1, ps_model='logistic', mask=None, clip=None,
+    random_state=0, verbose=False, class_weight='balanced', **kwargs,
+):
+    """Estimate per-treatment propensity scores.
+
+    Each treatment is compared with the shared all-zero control group.  With
+    ``K > 1``, every returned score is predicted by a model that did not train
+    on that cell. Logistic models use ``class_weight='balanced'`` by default,
+    matching :func:`LFC` and historical causarray fits. Pass
+    ``class_weight=None`` for calibrated treatment probabilities.
+
+    Parameters
+    ----------
+    A : array-like, shape (n,) or (n, a)
+        Binary treatment indicators.  Rows containing only zeros are controls.
+    X_A : array-like, shape (n, d_A)
+        Covariates used by the propensity model, including an intercept column
+        when ``fit_intercept=False``.
+    K : int, optional
+        Number of folds.  ``1`` fits and predicts on all eligible cells;
+        values greater than one produce out-of-fold predictions.
+    ps_model : {'logistic', 'random_forest_cv', 'ensemble'}, optional
+        Propensity model.
+    mask : array-like or None, shape (n,) or (n, a)
+        Optional per-treatment eligibility mask for model fitting.
+    clip : tuple(float, float) or None, optional
+        Bounds applied after prediction.  ``None`` returns raw probabilities.
+    random_state : int, optional
+        Random seed used for fold construction and supported estimators.
+    class_weight : str, dict or None, optional
+        Class weighting for logistic propensity estimation. The default
+        ``'balanced'`` matches :func:`LFC`; pass ``None`` for calibrated
+        probabilities.
+
+    Returns
+    -------
+    pi_hat : ndarray, shape (n, a)
+        Estimated probabilities ``P(A_j=1 | X_A)``.
+    """
+    A = np.asarray(A)
+    if A.ndim == 1:
+        A = A[:, None]
+    X_A = np.asarray(X_A)
+    if A.ndim != 2 or X_A.ndim != 2 or A.shape[0] != X_A.shape[0]:
+        raise ValueError('A and X_A must be two-dimensional with matching rows')
+    if not np.all(np.isin(A, (0, 1))):
+        raise ValueError('A must contain only binary treatment indicators')
+
+    try:
+        K_int = int(K)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('K must be a positive integer') from exc
+    if K_int != K:
+        raise ValueError('K must be a positive integer')
+    K = K_int
+    if K < 1:
+        raise ValueError('K must be a positive integer')
+    if K > A.shape[0]:
+        raise ValueError('K cannot exceed the number of samples')
+
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        if mask.ndim == 1:
+            mask = mask[:, None]
+        if mask.shape != A.shape:
+            raise ValueError('Mask must have the same shape as the treatment matrix')
+
+    func_ps, params_ps = _get_func_ps(
+        ps_model, verbose=False, random_state=random_state,
+        class_weight=class_weight, **kwargs)
+    if verbose:
+        pprint.pprint(params_ps)
+
+    if ps_model == 'random_forest_cv':
+        info_ecv = run_ecv(X_A, A, **params_ps)
+        func_ps, params_ps = _get_func_ps(
+            ps_model, verbose=False, ecv=False,
+            kwargs_ensemble=info_ecv['best_params_ensemble'],
+            kwargs_regr=info_ecv['best_params_regr'],
+        )
+        if verbose:
+            pprint.pprint('Best parameters for the regression model:')
+            pprint.pprint(info_ecv['best_params_regr'])
+            pprint.pprint('Best parameters for the ensemble model:')
+            pprint.pprint(info_ecv['best_params_ensemble'])
+
+    n = A.shape[0]
+    if K == 1:
+        folds = [(np.arange(n), np.arange(n))]
+    elif K == n:
+        folds = [
+            (np.delete(np.arange(n), j), np.array([j])) for j in range(n)
+        ]
+    else:
+        folds = KFold(
+            n_splits=K, random_state=random_state, shuffle=True,
+        ).split(X_A)
+
+    pi_hat = np.zeros(A.shape, dtype=float)
+    for train_index, test_index in folds:
+        A_train = A[train_index]
+        XA_train, XA_test = X_A[train_index], X_A[test_index]
+        i_ctrl = np.sum(A_train, axis=1) == 0
+
+        for j in range(A.shape[1]):
+            i_case = A_train[:, j] == 1
+            eligible = mask[train_index, j] if mask is not None else (i_ctrl | i_case)
+            y_train = A_train[eligible, j]
+            if y_train.size == 0 or np.unique(y_train).size != 2:
+                raise ValueError(
+                    f'Treatment {j} needs at least one eligible control and case '
+                    'in every training fold'
+                )
+
+            x_train = XA_train[eligible]
+            constant_design = np.all(np.ptp(x_train, axis=0) == 0)
+            if ps_model == 'logistic' and constant_design:
+                if class_weight == 'balanced':
+                    pi_hat[test_index, j] = 0.5
+                elif isinstance(class_weight, dict):
+                    sample_weight = np.asarray([
+                        class_weight.get(int(value), 1.0) for value in y_train
+                    ])
+                    pi_hat[test_index, j] = np.average(
+                        y_train, weights=sample_weight)
+                else:
+                    pi_hat[test_index, j] = np.mean(y_train)
+            else:
+                pi_hat[test_index, j] = func_ps(x_train, y_train, XA_test)
+
+    if clip is not None:
+        if len(clip) != 2 or not 0 <= clip[0] < clip[1] <= 1:
+            raise ValueError('clip must be None or a pair 0 <= lower < upper <= 1')
+        pi_hat = np.clip(pi_hat, clip[0], clip[1])
+    return pi_hat
+
+
 def cross_fitting(
     Y, A, X, X_A, family='poisson', K=1, glm_alpha=1e-4,
-    ps_model='logistic', 
-    Y_hat=None, pi_hat=None, mask=None, verbose=False, **kwargs):
+    ps_model='logistic', ps_class_weight='balanced',
+    Y_hat=None, pi_hat=None, mask=None, ps_clip=(0.01, 0.99),
+    return_raw_pi=False, verbose=False, **kwargs):
     '''
     Cross-fitting for causal estimands.
 
@@ -59,6 +204,10 @@ def cross_fitting(
         The regularization parameter for the generalized linear model. The default is 1e-4.
     ps_model : str, optional
         The propensity score model. The default is 'logistic'.
+    ps_class_weight : str, dict or None, optional
+        Class weighting used by the propensity model. ``'balanced'`` preserves
+        the established ``LFC`` nuisance fit; pass ``None`` for calibrated
+        treatment probabilities.
     
     Y_hat : array, optional
         Estimated potential outcome of shape (n, p, a, 2). The default is None.
@@ -66,8 +215,11 @@ def cross_fitting(
         Propensity score of shape (n, a). The default is None.
     mask : array, optional
         Boolean mask of shape (n, a) for the treatment, indicating which samples are used for 
-        the estimation of the estimand. This does not affect the estimation of pseudo-outcomes
-        and propensity scores.
+        propensity-model fitting and the downstream estimand.
+    ps_clip : tuple(float, float) or None, optional
+        Bounds applied to scores used by AIPW. ``None`` disables clipping.
+    return_raw_pi : bool, optional
+        Return raw scores as a third result when true.
 
     **kwargs : dict
         Additional arguments to pass to the model.
@@ -78,12 +230,22 @@ def cross_fitting(
         Estimated potential outcome under control.
     pi_hat : array
         Estimated propensity score.
+    pi_hat_raw : array
+        Unclipped propensity score, returned only when ``return_raw_pi=True``.
     '''
-    func_ps, params_ps = _get_func_ps(ps_model, verbose=False, **kwargs)
+    kwargs = dict(kwargs)
+    if 'class_weight' in kwargs:
+        legacy_class_weight = kwargs.pop('class_weight')
+        warnings.warn(
+            'Passing class_weight through LFC/cross_fitting is deprecated; '
+            'use ps_class_weight instead.',
+            FutureWarning, stacklevel=2,
+        )
+        ps_class_weight = legacy_class_weight
+
     params_glm = _filter_params(fit_glm, {**kwargs, 'verbose': verbose})
 
     if verbose:
-        pprint.pprint(params_ps)
         pprint.pprint(params_glm)
     
     if K > 1:
@@ -99,14 +261,31 @@ def cross_fitting(
         folds = [(np.arange(X.shape[0]), np.arange(X.shape[0]))]
 
     # Initialize lists to store results
-    fit_pi = True if pi_hat is None else False
-    pi_hat = np.zeros_like(A, dtype=float) if fit_pi else pi_hat
+    if pi_hat is None:
+        if verbose:
+            pprint.pprint('Fit propensity score models...')
+        ps_kwargs = {k: v for k, v in kwargs.items() if k != 'random_state'}
+        if ps_model in ('logistic', 'ensemble'):
+            ps_kwargs['class_weight'] = ps_class_weight
+        pi_hat_raw = estimate_propensity_scores(
+            A, X_A, K=K, ps_model=ps_model, mask=mask,
+            random_state=kwargs.get('random_state', 0), verbose=verbose,
+            **ps_kwargs,
+        )
+    else:
+        pi_hat_raw = np.asarray(pi_hat, dtype=float).reshape(A.shape)
+    if ps_clip is None:
+        pi_hat = pi_hat_raw.copy()
+    else:
+        if len(ps_clip) != 2 or not 0 <= ps_clip[0] < ps_clip[1] <= 1:
+            raise ValueError(
+                'ps_clip must be None or a pair 0 <= lower < upper <= 1')
+        pi_hat = np.clip(pi_hat_raw, ps_clip[0], ps_clip[1])
     fit_Y = True if Y_hat is None else False
     if fit_Y:
         _yhat_gb = Y.shape[0] * Y.shape[1] * A.shape[1] * 2 * 8 / 1e9
         _mem_limit_gb = kwargs.get('mem_limit_gb', None)
         if _mem_limit_gb is not None and _yhat_gb > _mem_limit_gb:
-            import warnings
             warnings.warn(
                 f"Y_hat allocation ({_yhat_gb:.1f} GB as float64) exceeds "
                 f"mem_limit_gb={_mem_limit_gb} GB; using float32 to halve peak memory.",
@@ -116,16 +295,6 @@ def cross_fitting(
         else:
             Y_hat = np.zeros((Y.shape[0], Y.shape[1], A.shape[1], 2), dtype=float)
 
-    # perform ECV at once
-    if fit_pi and ps_model == 'random_forest_cv':
-        info_ecv = run_ecv(X_A, A, **params_ps)
-        func_ps, params_ps = _get_func_ps(ps_model, verbose=False, ecv=False, 
-                kwargs_ensemble=info_ecv['best_params_ensemble'], kwargs_regr=info_ecv['best_params_regr'])
-        pprint.pprint('Best parameters for the regression model:')
-        pprint.pprint(info_ecv['best_params_regr'])
-        pprint.pprint('Best parameters for the ensemble model:')
-        pprint.pprint(info_ecv['best_params_ensemble'])
-
     # Perform cross-fitting
     for train_index, test_index in folds:
         # Split data
@@ -133,28 +302,6 @@ def cross_fitting(
         XA_train, XA_test = X_A[train_index], X_A[test_index]
         A_train, A_test = A[train_index], A[test_index]
         Y_train, Y_test = Y[train_index], Y[test_index]
-
-        if fit_pi:
-            if verbose: pprint.pprint('Fit propensity score models...')
-            i_ctrl = (np.sum(A_train, axis=1) == 0.)
-
-            pi = np.zeros_like(A_test, dtype=float)
-            for j in range(A.shape[1]):
-                i_case = (A_train[:,j] == 1.)
-
-                if mask is not None:
-                    i_cells = mask[:, j]
-                else:
-                    i_ctrl = (np.sum(A_train, axis=1) == 0.)
-                    i_cells = i_ctrl | i_case
-
-                if ps_model=='logistic' and XA_train.shape[1]==1 and np.all(XA_train==1):
-                    prob = np.sum(i_case)/np.sum(i_cells)
-                    pi[A_train[:,j] == 1., j] = prob
-                    pi[A_train[:,j] == 0., j] = 1 - prob
-                else:
-                    pi[:,j] = func_ps(XA_train[i_cells], A_train[i_cells][:,j], XA_test)
-            pi_hat[test_index] = pi
 
         if fit_Y:
             if verbose: pprint.pprint('Fit outcome models...')
@@ -174,15 +321,16 @@ def cross_fitting(
             Y_hat[test_index,:,:,0] = res[1][0]
             Y_hat[test_index,:,:,1] = res[1][1]
 
-    pi_hat = np.clip(pi_hat, 0.01, 0.99)
     Y_hat = np.clip(Y_hat, None, 1e5)
+    if return_raw_pi:
+        return Y_hat, pi_hat, pi_hat_raw
     return Y_hat, pi_hat
 
 
 
 
 
-def AIPW_mean(Y, A, mu, pi, positive=False):
+def AIPW_mean(Y, A, mu, pi):
     '''
     Augmented inverse probability weighted estimator (AIPW)
 
@@ -196,9 +344,6 @@ def AIPW_mean(Y, A, mu, pi, positive=False):
         Conditional outcome distribution estimate of shape (n, p, a, 2).
     pi : array
         Propensity score of shape (n, a, 2).
-    positive : bool, optional
-        Whether to restrict the pseudo-outcome to be positive.
-
     Returns
     -------
     tau : array
@@ -207,16 +352,18 @@ def AIPW_mean(Y, A, mu, pi, positive=False):
         Pseudo-outcome of shape (n, p, a, 2).
     '''
     
-    weight = A / pi
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+        weight = A / pi
     weight = weight[:, None, ...]
     Y = Y[:, :, None, None]
 
+    # Influence-function values are intentionally left unconstrained.  Even
+    # for a nonnegative outcome, individual AIPW pseudo-outcomes may be
+    # negative; projecting them cell by cell changes their mean and biases the
+    # estimator.  Parameter-space constraints belong after aggregation.
     pseudo_y = weight * (Y - mu) + mu
-    
-    if positive:
-        pseudo_y = np.clip(pseudo_y, 0, None)
 
-    tau = np.mean(pseudo_y, axis=0)
+    tau = np.mean(pseudo_y, axis=0, dtype=np.float64)
 
     return tau, pseudo_y
 
