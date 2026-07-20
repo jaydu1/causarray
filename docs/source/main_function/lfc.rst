@@ -13,20 +13,29 @@ Choosing the variance estimator
 -------------------------------
 
 ``LFC`` defaults to ``usevar='unequal'`` (Welch inference), which estimates
-the treatment and control variances separately. Retain this default for
-perturbation screens and for case-control, bulk, and donor-level pseudo-bulk
-analyses. Independence of the rows does not imply equal treatment-arm
-variances: disease severity, biological response, residual composition,
-library size, treatment imbalance, and heterogeneous expression can all make
-pooled inference anti-conservative.
+the treatment and control variances separately. Prefer this default when the
+treatment and control sample sizes, or their propensity-weighted effective
+sample sizes, are meaningfully unbalanced. Also retain it when arm-specific
+pseudo-outcome variances may differ and for case-control, bulk, and donor-level
+pseudo-bulk analyses. Independence of the rows does not imply equal
+treatment-arm variances: disease severity, biological response, residual
+composition, library size, treatment imbalance, and heterogeneous expression
+can all make pooled inference anti-conservative.
 
-Treat ``usevar='pooled'`` as an opt-in sensitivity or legacy analysis. Use it
-only when equal arm variances have a strong scientific and empirical
-justification; do not select it merely because a case-control study has a
-small number of independent samples. Pooled inference can produce much smaller
-standard errors and substantially more discoveries. For a deliberately
-justified batched sensitivity analysis, pass
-``lfc_kwargs=dict(usevar='pooled')``.
+For a small, approximately balanced perturbation comparison,
+``usevar='pooled'`` may provide better power when the independent sampling
+units and arm-specific pseudo-outcome variances are reasonably comparable.
+Treat it as an opt-in, empirically justified analysis rather than an automatic
+small-sample choice. Balanced counts alone do not justify pooling in a
+case-control study. Pooled inference can produce much smaller standard errors
+and substantially more discoveries. For a deliberately justified batched
+analysis, pass ``lfc_kwargs=dict(usevar='pooled')``.
+
+There is no universal sample-size ratio at which the recommendation changes.
+Compare nominal arm sizes, propensity-weighted effective sample sizes,
+arm-specific pseudo-outcome variability, and the stability of discoveries
+under both estimators. Retain ``usevar='unequal'`` when these diagnostics do not
+support pooling.
 
 Donor-level independence alone does not establish equal arm variances. For
 example, the SEA-AD tutorial uses ``usevar='unequal'`` because disease severity,

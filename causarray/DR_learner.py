@@ -301,19 +301,29 @@ def LFC(
 
         * ``'unequal'`` (default, v0.0.6+): Welch variance
           ``s₀²/n₀ + s₁²/n₁`` with Welch-Satterthwaite degrees of
-          freedom; p-values use the t-distribution. This is the recommended
-          choice for perturbation screens and for case-control, bulk, and
-          donor-level pseudo-bulk analyses. Independence of the rows does not
-          imply equal treatment-arm variances, and biological heterogeneity or
-          unequal effective sample sizes can make pooled inference
-          anti-conservative.
+          freedom; p-values use the t-distribution. Prefer this estimator when
+          treatment and control sample sizes or effective sample sizes are
+          meaningfully unbalanced, when arm-specific pseudo-outcome variances
+          may differ, and for case-control, bulk, and donor-level pseudo-bulk
+          analyses. Independence of the rows does not imply equal
+          treatment-arm variances, and biological heterogeneity or imbalance
+          can make pooled inference anti-conservative.
         * ``'pooled'``: pooled-variance estimator ``(s² + eps_var) / n``.
-          Treat this as an opt-in sensitivity or legacy analysis, not as the
-          default for small case-control studies. Use it only when equal arm
-          variances have a strong scientific and empirical justification.
-          Pooled inference can produce substantially smaller standard errors
-          and many more discoveries; donor-level independence alone is not a
-          justification for pooling.
+          For a small, approximately balanced perturbation comparison, this
+          estimator may provide better power when the independent sampling
+          units and arm-specific pseudo-outcome variances are reasonably
+          comparable. Treat it as an opt-in, empirically justified analysis,
+          not as an automatic choice for every small study. Balanced sample
+          counts alone are insufficient for case-control data, where biological
+          heterogeneity commonly favors ``'unequal'``. Pooled inference can
+          produce substantially smaller standard errors and many more
+          discoveries.
+
+        There is no universal arm-size ratio at which the choice should switch.
+        Inspect nominal and propensity-weighted effective sample sizes,
+        arm-specific pseudo-outcome variability, and sensitivity of the
+        discoveries. When those diagnostics are uncertain, retain
+        ``'unequal'``.
 
         ``'unequal'`` accommodates arm-specific variance but does not model
         within-donor or within-subject correlation. Repeated cells from the
@@ -634,10 +644,13 @@ def gcate_lfc_batch(
     lfc_kwargs : dict or None
         Extra keyword arguments forwarded to :func:`LFC`
         (e.g. ``usevar``, ``fdx``, ``thres_min``). Retain the default
-        ``usevar='unequal'`` for perturbation screens and for case-control,
-        bulk, or pseudo-bulk analyses. Pass
-        ``lfc_kwargs=dict(usevar='pooled')`` only for a deliberately justified
-        equal-variance sensitivity or legacy analysis.
+        ``usevar='unequal'`` when arm sizes or effective sample sizes are
+        meaningfully unbalanced, when arm-specific variability may differ, and
+        for case-control, bulk, or pseudo-bulk analyses. For a small,
+        approximately balanced perturbation comparison with comparable
+        pseudo-outcome variability, ``lfc_kwargs=dict(usevar='pooled')`` may
+        improve power. There is no universal balance threshold; compare the
+        relevant diagnostics and retain ``'unequal'`` when uncertain.
     **kwargs
         Additional arguments forwarded to both :func:`fit_gcate_batch` and
         :func:`LFC`.  When a key collides with ``gcate_kwargs`` /

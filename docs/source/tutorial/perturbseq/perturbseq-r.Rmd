@@ -69,12 +69,12 @@ res_gate <- causarray$fit_gcate(Y, X, A, r, verbose=TRUE) # a list of results fr
 U <- res_gate[[2]]$U
 ```
 
-Next, we apply causarray to estimate the causal effects of perturbations on gene expression. We use unequal (Welch) variance because treatment and control cells can have different pseudo-outcome variability; pooling those variances can be anti-conservative in a perturbation screen.
+Next, we apply causarray to estimate the causal effects of perturbations on gene expression. Here the 106 GFP control cells and the perturbation groups (median 89 cells) are approximately balanced. We therefore use pooled variance to retain power in this relatively small comparison. This is a dataset-specific choice: unequal variance remains preferable when arm sizes or effective sample sizes are meaningfully unbalanced, when pseudo-outcome variability differs between arms, and for the Replogle and case-control tutorials.
 
 ```{r}
 offsets <- log(res_gate[[2]][['kwargs_glm']][['size_factor']]) # use the precomputed size factors
 res <- causarray$LFC(Y, cbind(X, U), A, cbind(X_A, U), offset=offsets,
-                    usevar="unequal", verbose=TRUE)
+                    usevar="pooled", verbose=TRUE)
 ```
 
 ```{r}
