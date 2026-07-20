@@ -11,6 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 setwd("/Users/dujinhong/Documents/study/Kathryn Roeder/Project/causarray/causarray/docs/source/tutorial/perturbseq")
 ```
 
+# Perturb-seq Tutorial (R)
 
 The original data of Jin et al 2020 can be downloaded from the Broad single cell portal (https://singlecell.broadinstitute.org/single_cell/study/SCP1184).
 Here, we just use a subset of the data to demonstrate the workflow of the analysis.
@@ -22,7 +23,18 @@ library(Seurat)
 
 sc.seurat <- readRDS("perturbseq-exneu.rds")
 
-Y <- data.frame(t(as.matrix(GetAssayData(sc.seurat, assay = "RNA", layer = "counts")))) # cell-by-gene matrix
+# Access the counts through Seurat when its installed version recognizes the
+# serialized Assay5 object; otherwise recover the same layer and dimnames
+# directly. The fallback keeps this tutorial runnable with older Seurat builds.
+if ("RNA" %in% Assays(sc.seurat)) {
+  counts <- GetAssayData(sc.seurat, assay = "RNA", layer = "counts")
+} else {
+  rna.assay <- sc.seurat@assays[["RNA"]]
+  counts <- rna.assay@layers[["counts"]]
+  rownames(counts) <- rownames(rna.assay@features)
+  colnames(counts) <- rownames(rna.assay@cells)
+}
+Y <- data.frame(t(as.matrix(counts)), check.names = FALSE) # cell-by-gene matrix
 metadata <- sc.seurat@meta.data
 
 perturb <- metadata
@@ -44,7 +56,9 @@ Here, `Y` and `A` can be dataframes.
 
 
 
-Use R package `reticulate` to load the Python package `causarray`.
+Use R package `reticulate` to load the Python package `causarray`. Render this
+tutorial from the `causarray-r` environment defined by `environment-r.yaml`;
+reticulate then connects to the NumPy-2-based Python `causarray` environment.
 
 ```{r}
 require(reticulate)

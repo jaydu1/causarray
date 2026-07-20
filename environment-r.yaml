@@ -1,0 +1,10 @@
+name: causarray-r
+channels:
+  - conda-forge
+dependencies:
+  - r-base=4.4
+  - r-reticulate>=1.43
+  - r-rmarkdown
+  - r-knitr
+  - r-seurat>=5
+  - pandoc

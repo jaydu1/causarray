@@ -322,7 +322,7 @@ def test_lfc_batch_result_columns(small_data):
         Y, X, A, r=2, batch_size=3, max_cells=200, n_ctrl=30,
         family='nb', gcate_kwargs=_GCATE_KW,
     )
-    for col in ('tau', 'std', 'stat', 'pvalue', 'padj', 'batch'):
+    for col in ('tau', 'std', 'log2fc', 'log2fc_se', 'stat', 'pvalue', 'padj', 'batch'):
         assert col in df.columns, f"Missing column: {col}"
 
 
@@ -369,6 +369,17 @@ def test_lfc_batch_cache_path(small_data, tmp_path):
     assert len(batch_keys) == n_batches
     assert '/meta' in keys
 
+    # Simulate a pre-0.0.8 cache whose batch frames contain only the original
+    # natural-log result columns. Resuming must derive the new aliases without
+    # rerunning the completed GCATE batches.
+    with pd.HDFStore(cache, mode='a') as store:
+        for key in batch_keys:
+            legacy = store[key].drop(columns=['log2fc', 'log2fc_se'])
+            store.put(key, legacy, format='fixed')
+        meta = store['/meta']
+        meta.loc[0, 'columns'] = ','.join(legacy.columns.astype(str))
+        store.put('/meta', meta, format='fixed')
+
     # Re-running with same cache_path should skip all batches and return same result
     df_resumed = gcate_lfc_batch(
         Y, X, A, r=2, batch_size=3, max_cells=200, n_ctrl=30,
@@ -376,6 +387,8 @@ def test_lfc_batch_cache_path(small_data, tmp_path):
     )
     assert len(df_resumed) == len(df_full)
     assert set(df_resumed.columns) == set(df_full.columns)
+    np.testing.assert_allclose(df_resumed['log2fc'], df_resumed['tau'] / np.log(2.0))
+    np.testing.assert_allclose(df_resumed['log2fc_se'], df_resumed['std'] / np.log(2.0))
 
 
 def test_lfc_batch_deprecation_warning(small_data):

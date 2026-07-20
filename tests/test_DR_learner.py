@@ -20,10 +20,25 @@ class TestLFCOutputSchema:
         Y, W, A = sample_data
         result, estimation = LFC(Y, W, A)
         assert isinstance(result, pd.DataFrame)
-        for col in ('tau', 'std', 'stat', 'rej', 'pvalue', 'padj',
+        for col in ('tau', 'std', 'log2fc', 'log2fc_se', 'stat', 'rej', 'pvalue', 'padj',
                     'pvalue_emp_null_adj', 'padj_emp_null_adj',
                     'mean_control', 'mean_treated', 'estimable'):
             assert col in result.columns
+        assert result.columns.get_loc('log2fc') == result.columns.get_loc('std') + 1
+        assert result.columns.get_loc('log2fc_se') == result.columns.get_loc('log2fc') + 1
+
+    @pytest.mark.parametrize('usevar', ['pooled', 'unequal'])
+    def test_log2fc_columns_are_exact_scale_conversions(self, sample_data, usevar):
+        Y, W, A = sample_data
+        result, _ = LFC(Y, W, A, usevar=usevar)
+        np.testing.assert_allclose(result['log2fc'], result['tau'] / np.log(2.0))
+        np.testing.assert_allclose(result['log2fc_se'], result['std'] / np.log(2.0))
+
+        finite = np.isfinite(result['stat']) & np.isfinite(result['log2fc_se'])
+        np.testing.assert_allclose(
+            result.loc[finite, 'log2fc'] / result.loc[finite, 'log2fc_se'],
+            result.loc[finite, 'stat'],
+        )
 
     def test_float32_aipw_mean_uses_float64_accumulation(self):
         Y = np.ones((8, 2), dtype=np.float32)
@@ -54,6 +69,8 @@ class TestLFCOutputSchema:
         assert not bool(result.loc[0, 'estimable'])
         assert result.loc[0, 'tau'] == 0
         assert np.isinf(result.loc[0, 'std'])
+        assert result.loc[0, 'log2fc'] == 0
+        assert np.isinf(result.loc[0, 'log2fc_se'])
         assert np.isnan(result.loc[0, 'pvalue'])
 
     def test_aipw_pseudo_outcomes_are_always_unclipped(self):

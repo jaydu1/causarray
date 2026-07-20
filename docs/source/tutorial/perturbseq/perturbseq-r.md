@@ -1,4 +1,5 @@
-# Perturb-seq Tutorial (R)
+Perturb-seq Tutorial (R)
+========================
 
 The original data of Jin et al 2020 can be downloaded from the Broad
 single cell portal
@@ -14,25 +15,28 @@ library(Seurat)
 
     ## Loading required package: sp
 
-    ## 'SeuratObject' was built under R 4.3.2 but the current version is
-    ## 4.3.3; it is recomended that you reinstall 'SeuratObject' as the ABI
-    ## for R may have changed
-
-    ## 'SeuratObject' was built with package 'Matrix' 1.6.3 but the current
-    ## version is 1.6.5; it is recomended that you reinstall 'SeuratObject' as
-    ## the ABI for 'Matrix' may have changed
-
     ## 
     ## Attaching package: 'SeuratObject'
 
-    ## The following object is masked from 'package:base':
+    ## The following objects are masked from 'package:base':
     ## 
-    ##     intersect
+    ##     intersect, t
 
 ``` r
 sc.seurat <- readRDS("perturbseq-exneu.rds")
 
-Y <- data.frame(t(as.matrix(GetAssayData(sc.seurat, assay = "RNA", layer = "counts")))) # cell-by-gene matrix
+# Access the counts through Seurat when its installed version recognizes the
+# serialized Assay5 object; otherwise recover the same layer and dimnames
+# directly. The fallback keeps this tutorial runnable with older Seurat builds.
+if ("RNA" %in% Assays(sc.seurat)) {
+  counts <- GetAssayData(sc.seurat, assay = "RNA", layer = "counts")
+} else {
+  rna.assay <- sc.seurat@assays[["RNA"]]
+  counts <- rna.assay@layers[["counts"]]
+  rownames(counts) <- rownames(rna.assay@features)
+  colnames(counts) <- rownames(rna.assay@cells)
+}
+Y <- data.frame(t(as.matrix(counts)), check.names = FALSE) # cell-by-gene matrix
 metadata <- sc.seurat@meta.data
 
 perturb <- metadata
@@ -55,6 +59,9 @@ For running causarray, we require the following inputs:
 Here, `Y` and `A` can be dataframes.
 
 Use R package `reticulate` to load the Python package `causarray`.
+Render this tutorial from the `causarray-r` environment defined by
+`environment-r.yaml`; reticulate then connects to the NumPy-2-based
+Python `causarray` environment.
 
 ``` r
 require(reticulate)
@@ -69,7 +76,7 @@ causarray <- import("causarray")
 cat(causarray$`__version__`)
 ```
 
-    ## 0.0.7
+    ## 0.0.8
 
 ``` r
 # (Y, A) should be either data.frame or matrix
@@ -90,14 +97,13 @@ res_gate <- causarray$fit_gcate(Y, X, A, r, verbose=TRUE) # a list of results fr
 
     ## {'d': 30, 'n': 2926, 'p': 3221, 'r': 10}
     ## 'Estimating initial latent variables with GLMs...'
-    ## 'Fitting nb GLM with offset...'
-    ## 'Fitting GLM done.'
+    ## 'Fitting nb GLM (fast)...'
     ## 'Estimating initial coefficients with GLMs...'
-    ## 'Fitting nb GLM with offset...'
-    ## 'Fitting GLM done.'
-    ## {'kwargs_es': {'max_iters': 500,
+    ## 'Fitting nb GLM (fast)...'
+    ## {'kwargs_es': {'max_iters': 50,
     ##                'patience': 5,
-    ##                'tolerance': 0.001,
+    ##                'rel_tol': 0.0002,
+    ##                'tolerance': 0.0,
     ##                'warmup': 0},
     ##  'kwargs_glm': {'disp_glm': array([ 1.11673516,  1.06870944,  1.16716468, ..., 12.58818245,
     ##        16.46897663,  1.70852614], shape=(3221,)),
@@ -108,12 +114,19 @@ res_gate <- causarray$fit_gcate(Y, X, A, r, verbose=TRUE) # a list of results fr
     ##                'alpha': 0.1,
     ##                'beta': 0.5,
     ##                'max_iters': 20,
-    ##                'tol': 0.0001}}
+    ##                'recheck_interval': 10,
+    ##                'sparsity_boost': 2.0,
+    ##                'sparsity_threshold': 0.5,
+    ##                'tol': 0.0001,
+    ##                'tol_cell': 0.0001,
+    ##                'tol_gene': 0.0001,
+    ##                'warmup_iters': 0}}
     ## 'Fitting GCATE (step 1)...'
     ## {'d': 30, 'n': 2926, 'p': 3221, 'r': 10}
-    ## {'kwargs_es': {'max_iters': 500,
+    ## {'kwargs_es': {'max_iters': 50,
     ##                'patience': 5,
-    ##                'tolerance': 0.001,
+    ##                'rel_tol': 0.0002,
+    ##                'tolerance': 0.0,
     ##                'warmup': 0},
     ##  'kwargs_glm': {'disp_glm': array([ 1.11673516,  1.06870944,  1.16716468, ..., 12.58818245,
     ##        16.46897663,  1.70852614], shape=(3221,)),
@@ -124,7 +137,13 @@ res_gate <- causarray$fit_gcate(Y, X, A, r, verbose=TRUE) # a list of results fr
     ##                'alpha': 0.1,
     ##                'beta': 0.5,
     ##                'max_iters': 20,
-    ##                'tol': 0.0001}}
+    ##                'recheck_interval': 10,
+    ##                'sparsity_boost': 2.0,
+    ##                'sparsity_threshold': 0.5,
+    ##                'tol': 0.0001,
+    ##                'tol_cell': 0.0001,
+    ##                'tol_gene': 0.0001,
+    ##                'warmup_iters': 0}}
     ## 'Fitting GCATE (step 2)...'
 
 ``` r
@@ -134,11 +153,11 @@ U <- res_gate[[2]]$U
 Next, we apply causarray to estimate the causal effects of perturbations
 on gene expression. Here the 106 GFP control cells and the perturbation
 groups (median 89 cells) are approximately balanced. We therefore use
-pooled variance to retain power in this relatively small comparison. This
-is a dataset-specific choice: unequal variance remains preferable when arm
-sizes or effective sample sizes are meaningfully unbalanced, when
-pseudo-outcome variability differs between arms, and for the Replogle and
-case-control tutorials.
+pooled variance to retain power in this relatively small comparison.
+This is a dataset-specific choice: unequal variance remains preferable
+when arm sizes or effective sample sizes are meaningfully unbalanced,
+when pseudo-outcome variability differs between arms, and for the
+Replogle and case-control tutorials.
 
 ``` r
 offsets <- log(res_gate[[2]][['kwargs_glm']][['size_factor']]) # use the precomputed size factors
@@ -148,18 +167,24 @@ res <- causarray$LFC(Y, cbind(X, U), A, cbind(X_A, U), offset=offsets,
 
     ## 'Estimating LFC...'
     ## {'a': 29, 'd': 11, 'd_A': 12, 'estimands': 'LFC', 'n': 2926, 'p': 3221}
-    ## {'C': 1.0,
-    ##  'class_weight': 'balanced',
-    ##  'fit_intercept': False,
-    ##  'random_state': 0,
-    ##  'verbose': False}
     ## {'offset': array([-0.63123664, -0.13510128,  0.20175377, ..., -0.58092607,
     ##        -0.31435661, -0.25029351], shape=(2926,)),
     ##  'random_state': 0,
     ##  'verbose': True}
     ## 'Fit propensity score models...'
+    ## {'C': 1.0,
+    ##  'class_weight': 'balanced',
+    ##  'fit_intercept': False,
+    ##  'random_state': 0,
+    ##  'verbose': False}
     ## 'Fit outcome models...'
     ## 'Fitting nb GLM (fast)...'
+    ## ('Fast GLM coefficients exceed bound (max|B|=1.63e+05 > 1e+04); falling back '
+    ##  'to statsmodels...')
+    ## 'Estimating dispersion parameter...'
+    ## 'Fitting poisson GLM with offset...'
+    ## 'Fitting nb GLM with offset...'
+    ## 'Fitting GLM done.'
     ## 'Estimating AIPW mean...'
 
 ``` r

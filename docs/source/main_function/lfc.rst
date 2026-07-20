@@ -9,6 +9,28 @@ with effect estimates, standard errors, and BH-adjusted p-values.
 For screens with hundreds of perturbations use :func:`gcate_lfc_batch`, which
 runs GCATE and LFC in batches to keep peak memory bounded.
 
+Effect-size columns
+-------------------
+
+The returned DataFrame reports the treatment-versus-control effect on both
+natural-log and base-2 scales:
+
+=================  ===========================================================
+Column             Definition
+=================  ===========================================================
+``tau``            Natural logarithm of the treated/control mean ratio.
+``std``            Standard error of ``tau`` on the natural-log scale.
+``log2fc``         Base-2 log fold change, exactly ``tau / log(2)``.
+``log2fc_se``      Standard error of ``log2fc``, exactly ``std / log(2)``.
+=================  ===========================================================
+
+``log2fc_se`` is the standard error of the estimated log2 fold change, not the
+sample standard deviation of expression. The rescaling leaves ``stat``,
+p-values, adjusted p-values, and discoveries unchanged. ``tau`` and ``std``
+remain available for backward compatibility. The same columns are returned by
+``gcate_lfc_batch``; compatible caches made by older versions are upgraded in
+memory when loaded.
+
 Choosing the variance estimator
 -------------------------------
 

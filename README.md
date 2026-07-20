@@ -29,7 +29,16 @@ For optimal parallel performance, we recommend installing `llvm-openmp` if using
 conda install -c conda-forge llvm-openmp
 ```
 
-For `R` users, `reticulate` can be used to call `causarray` from `R`.
+For `R` users, `reticulate` can be used to call `causarray` from R while
+keeping NumPy >2 in the Python environment. Create the separate R environment
+with a current NumPy-2-compatible reticulate build:
+
+```bash
+conda env create -f environment-r.yaml
+```
+
+The R tutorial runs from `causarray-r` and connects to the Python package in
+the `causarray` environment.
 The documentation and tutorials using both `Python` and `R` are available at [causarray.readthedocs.io](https://causarray.readthedocs.io/en/latest/).
 
 

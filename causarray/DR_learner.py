@@ -10,6 +10,24 @@ from causarray.DR_inference import fdx_control, bh_correction
 from causarray.utils import reset_random_seeds, pprint, tqdm, comp_size_factor, _filter_params
 
 
+def _add_log2fc_columns(df_res):
+    """Add base-2 LFC aliases while retaining natural-log result columns."""
+    log2 = np.log(2.0)
+    log2fc = df_res['tau'].to_numpy() / log2
+    log2fc_se = df_res['std'].to_numpy() / log2
+
+    # Recompute existing aliases as well as missing ones.  This normalizes
+    # mixed old/new frames loaded from resumable batch caches and guarantees
+    # that the aliases remain exact transformations of tau and std.
+    for name in ('log2fc', 'log2fc_se'):
+        if name in df_res.columns:
+            df_res.pop(name)
+    insert_at = df_res.columns.get_loc('std') + 1
+    df_res.insert(insert_at, 'log2fc', log2fc)
+    df_res.insert(insert_at + 1, 'log2fc_se', log2fc_se)
+    return df_res
+
+
 
 def compute_causal_estimand(
     estimand,
@@ -369,9 +387,17 @@ def LFC(
     Returns
     -------
     df_res : DataFrame
-        Test results with effect estimates and inference columns, raw
-        ``mean_control`` and ``mean_treated`` counterfactual means, and an
-        ``estimable`` flag (plus ``trt`` for multiple treatments).
+        Test results with natural-log effect estimate ``tau`` and standard
+        error ``std``, together with their base-2 equivalents ``log2fc`` and
+        ``log2fc_se``. The fold change is treatment relative to control, and
+        ``log2fc_se`` is a standard error (not a sample standard deviation).
+        The result also contains inference columns, raw ``mean_control`` and
+        ``mean_treated`` counterfactual means, and an ``estimable`` flag (plus
+        ``trt`` for multiple treatments).
+
+        .. versionadded:: 0.0.8
+            Added the ``log2fc`` and ``log2fc_se`` convenience columns. The
+            original natural-log ``tau`` and ``std`` columns remain unchanged.
     """
 
     def estimand(etas, A, **kwargs):
@@ -458,12 +484,13 @@ def LFC(
     if K is None:
         K = 2 if cross_est else 1
 
-    return compute_causal_estimand(
+    df_res, estimation = compute_causal_estimand(
         estimand, Y, W, A, W_A, family, offset,    
         Y_hat=Y_hat, pi_hat=pi_hat, mask=mask,
         fdx=fdx, fdx_alpha=fdx_alpha, fdx_c=fdx_c,
         verbose=verbose, backend=backend, K=K, ps_clip=ps_clip,
         ps_class_weight=ps_class_weight, **kwargs)
+    return _add_log2fc_columns(df_res), estimation
 
 
 
@@ -662,8 +689,10 @@ def gcate_lfc_batch(
     Returns
     -------
     df_res : DataFrame
-        Concatenated result from all batches.  Includes a ``'batch'``
-        column with the 0-based batch index so batches can be identified.
+        Concatenated result from all batches. Includes natural-log ``tau`` and
+        ``std`` columns, base-2 ``log2fc`` and ``log2fc_se`` columns, and a
+        ``'batch'`` column with the 0-based batch index. Older compatible
+        caches containing only ``tau`` and ``std`` are upgraded in memory.
     """
     import gc
     from causarray.gcate import fit_gcate_batch
@@ -834,7 +863,7 @@ def gcate_lfc_batch(
         result = pd.concat(
             [new_dfs[i] for i in all_indices], axis=0
         ).reset_index(drop=True)
-    return result
+    return _add_log2fc_columns(result)
 
 
 def LFC_batch(*args, **kwargs):

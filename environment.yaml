@@ -11,7 +11,7 @@ dependencies:
   - jupyter
   - matplotlib
   - numba
-  - numpy
+  - numpy>2
   - pandas
   - pip  
   - python>=3.8
@@ -42,5 +42,3 @@ dependencies:
       # for development
       - build
       - pyproject-hooks
-      
-

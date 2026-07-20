@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.0.8] - 2026-07-20
+
+### Added
+
+- `LFC()` and `gcate_lfc_batch()` results now include `log2fc` and
+  `log2fc_se`, the base-2 equivalents of the existing natural-log `tau` and
+  `std` columns. Existing statistics, p-values, and discoveries are unchanged.
+
+### Changed
+
+- Older compatible `gcate_lfc_batch()` caches are upgraded in memory with the
+  new log2-scale columns when resumed.
+- The Python environment now requires NumPy >2. A separate `causarray-r`
+  environment supplies R 4.4 and a NumPy-2-compatible `reticulate`, avoiding
+  changes to the Python numerical stack for R interoperability.
+
 ## [0.0.7] - 2026-07-18
 
 ### Added
