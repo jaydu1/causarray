@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from sklearn_ensemble_cv import reset_random_seeds, Ensemble, ECV
@@ -10,6 +11,7 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 import pprint
 import warnings
+from collections.abc import Mapping
 
 from sklearn.model_selection import KFold, ShuffleSplit
 
@@ -176,6 +178,242 @@ def estimate_propensity_scores(
             raise ValueError('clip must be None or a pair 0 <= lower < upper <= 1')
         pi_hat = np.clip(pi_hat, clip[0], clip[1])
     return pi_hat
+
+
+def refit_propensity_scores(
+    A, X_A, drop_by_treatment=None, pi_hat=None, treatment_names=None,
+    covariate_names=None, penalty_factors_by_treatment=None, K=1,
+    ps_model='logistic', mask=None, clip=None, random_state=0, verbose=False,
+    class_weight='balanced', **kwargs,
+):
+    """Refit propensity scores with treatment-specific covariate filtering.
+
+    This helper supports sensitivity analyses in which different treatments
+    omit different observed covariates or latent factors, or apply stronger L2
+    regularization to selected covariates. When existing scores are supplied,
+    only treatments named in either treatment-specific mapping are refitted;
+    the remaining columns are preserved exactly. Outcome models are not fit by
+    this function and cached ``Y_hat`` values can be reused in :func:`LFC`.
+
+    Parameters
+    ----------
+    A : array-like, shape (n, a)
+        Binary treatment indicator matrix.
+    X_A : array-like, shape (n, d_A)
+        Full propensity-model design before treatment-specific filtering.
+    drop_by_treatment : mapping or None
+        Treatment names or indices mapped to covariate names or indices to
+        remove for that treatment. Defaults to no removals.
+    pi_hat : array-like or None, shape (n, a)
+        Existing raw propensity scores. If supplied, treatments absent from
+        ``drop_by_treatment`` are not refitted.
+    treatment_names, covariate_names : sequence, optional
+        Column labels, inferred from DataFrames when possible.
+    penalty_factors_by_treatment : mapping or None
+        Treatment names or indices mapped to ``{covariate: factor}`` mappings.
+        A factor greater than one applies that multiple of the ordinary L2
+        penalty to the named coefficient. This is implemented by dividing the
+        covariate by ``sqrt(factor)`` during both fitting and prediction and is
+        available only for ``ps_model='logistic'`` with an L2 penalty. A factor
+        of one leaves the covariate unchanged. Interpret relative penalties on
+        a common scale; ``prep_causarray_data`` standardizes log-library size.
+    K, ps_model, mask, clip, random_state, verbose, class_weight, **kwargs
+        Passed to :func:`estimate_propensity_scores` for each refitted model.
+
+    Returns
+    -------
+    pi_updated : ndarray, shape (n, a)
+        Updated propensity scores.
+    report : DataFrame
+        Audit table of refitted treatments and retained/dropped covariates.
+    """
+    if drop_by_treatment is None:
+        drop_by_treatment = {}
+    if penalty_factors_by_treatment is None:
+        penalty_factors_by_treatment = {}
+    if not isinstance(drop_by_treatment, Mapping):
+        raise ValueError('drop_by_treatment must be a mapping')
+    if not isinstance(penalty_factors_by_treatment, Mapping):
+        raise ValueError('penalty_factors_by_treatment must be a mapping')
+    if penalty_factors_by_treatment:
+        if ps_model != 'logistic':
+            raise ValueError(
+                'penalty_factors_by_treatment is supported only for logistic models'
+            )
+        if kwargs.get('penalty', 'l2') != 'l2':
+            raise ValueError(
+                'penalty_factors_by_treatment requires logistic penalty="l2"'
+            )
+
+    if isinstance(A, pd.DataFrame):
+        if treatment_names is None:
+            treatment_names = list(A.columns)
+        A_array = A.to_numpy()
+    else:
+        A_array = np.asarray(A)
+    if A_array.ndim == 1:
+        A_array = A_array[:, None]
+    if A_array.ndim != 2 or not np.all(np.isin(A_array, (0, 1))):
+        raise ValueError('A must be a one- or two-dimensional binary matrix')
+    if treatment_names is None:
+        treatment_names = list(range(A_array.shape[1]))
+    treatment_names = list(treatment_names)
+    if len(treatment_names) != A_array.shape[1]:
+        raise ValueError('treatment_names must match the number of treatments')
+    if len(set(treatment_names)) != len(treatment_names):
+        raise ValueError('treatment_names must be unique')
+
+    if isinstance(X_A, pd.DataFrame):
+        if covariate_names is None:
+            covariate_names = list(X_A.columns)
+        X_array = X_A.to_numpy()
+    else:
+        X_array = np.asarray(X_A)
+    if X_array.ndim != 2 or X_array.shape[0] != A_array.shape[0]:
+        raise ValueError('X_A must be two-dimensional with the same rows as A')
+    try:
+        X_array = np.asarray(X_array, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('X_A must contain numeric covariates') from exc
+    if not np.all(np.isfinite(X_array)):
+        raise ValueError('X_A must contain only finite values')
+    if covariate_names is None:
+        covariate_names = [f'covariate_{j + 1}' for j in range(X_array.shape[1])]
+    covariate_names = list(covariate_names)
+    if len(covariate_names) != X_array.shape[1]:
+        raise ValueError('covariate_names must match the number of covariates')
+    if len(set(covariate_names)) != len(covariate_names):
+        raise ValueError('covariate_names must be unique')
+
+    treatment_lookup = {name: j for j, name in enumerate(treatment_names)}
+    covariate_lookup = {name: j for j, name in enumerate(covariate_names)}
+
+    def resolve_treatment(value):
+        if value in treatment_lookup:
+            return treatment_lookup[value]
+        if isinstance(value, (int, np.integer)) and 0 <= int(value) < A_array.shape[1]:
+            return int(value)
+        raise ValueError(f'Unknown treatment: {value}')
+
+    def resolve_covariate(value):
+        if value in covariate_lookup:
+            return covariate_lookup[value]
+        if isinstance(value, (int, np.integer)) and 0 <= int(value) < X_array.shape[1]:
+            return int(value)
+        raise ValueError(f'Unknown covariate: {value}')
+
+    drops = {}
+    for treatment, covariates in drop_by_treatment.items():
+        j = resolve_treatment(treatment)
+        if j in drops:
+            raise ValueError(f'Treatment {treatment_names[j]} is specified more than once')
+        if isinstance(covariates, (str, bytes)):
+            covariates = [covariates]
+        indices = [resolve_covariate(value) for value in covariates]
+        if len(set(indices)) != len(indices):
+            raise ValueError(
+                f'Duplicate dropped covariates for treatment {treatment_names[j]}'
+            )
+        drops[j] = set(indices)
+
+    penalty_factors = {}
+    for treatment, factors in penalty_factors_by_treatment.items():
+        j = resolve_treatment(treatment)
+        if j in penalty_factors:
+            raise ValueError(f'Treatment {treatment_names[j]} is specified more than once')
+        if not isinstance(factors, Mapping):
+            raise ValueError(
+                f'Penalty factors for treatment {treatment_names[j]} must be a mapping'
+            )
+        resolved = {}
+        for covariate, factor in factors.items():
+            k = resolve_covariate(covariate)
+            try:
+                factor = float(factor)
+            except (TypeError, ValueError) as exc:
+                raise ValueError('Penalty factors must be finite numbers at least 1') from exc
+            if not np.isfinite(factor) or factor < 1:
+                raise ValueError('Penalty factors must be finite numbers at least 1')
+            if k in resolved:
+                raise ValueError(
+                    f'Duplicate penalty factors for covariate {covariate_names[k]}'
+                )
+            resolved[k] = factor
+        penalty_factors[j] = resolved
+
+    for j in set(drops).intersection(penalty_factors):
+        conflict = drops[j].intersection(penalty_factors[j])
+        if conflict:
+            names = [covariate_names[k] for k in sorted(conflict)]
+            raise ValueError(
+                f'Covariates cannot be both dropped and penalized for '
+                f'{treatment_names[j]}: {names}'
+            )
+
+    if pi_hat is None:
+        pi_updated = np.empty(A_array.shape, dtype=float)
+        refit_indices = range(A_array.shape[1])
+    else:
+        pi_updated = np.asarray(pi_hat, dtype=float).copy()
+        if pi_updated.shape != A_array.shape:
+            raise ValueError('pi_hat must have the same shape as A')
+        if (not np.all(np.isfinite(pi_updated))
+                or np.any((pi_updated < 0) | (pi_updated > 1))):
+            raise ValueError('pi_hat must contain finite probabilities in [0, 1]')
+        refit_indices = sorted(set(drops).union(penalty_factors))
+
+    mask_array = None
+    if mask is not None:
+        mask_array = np.asarray(mask, dtype=bool)
+        if mask_array.ndim == 1:
+            mask_array = mask_array[:, None]
+        if mask_array.shape != A_array.shape:
+            raise ValueError('Mask must have the same shape as the treatment matrix')
+
+    ctrl = np.sum(A_array, axis=1) == 0
+    rows = []
+    for j in refit_indices:
+        dropped = drops.get(j, set())
+        retained = [k for k in range(X_array.shape[1]) if k not in dropped]
+        if not retained:
+            raise ValueError(
+                f'Filtering removes every covariate for treatment {treatment_names[j]}'
+            )
+        eligible = ctrl | (A_array[:, j] == 1)
+        if mask_array is not None:
+            eligible &= mask_array[:, j]
+        X_treatment = X_array[:, retained].copy()
+        treatment_penalties = penalty_factors.get(j, {})
+        for position, k in enumerate(retained):
+            factor = treatment_penalties.get(k, 1.0)
+            X_treatment[:, position] /= np.sqrt(factor)
+        scores = estimate_propensity_scores(
+            A_array[:, [j]], X_treatment, K=K,
+            ps_model=ps_model, mask=eligible[:, None], clip=None,
+            random_state=random_state, verbose=verbose,
+            class_weight=class_weight, **kwargs,
+        )
+        pi_updated[:, j] = scores[:, 0]
+        rows.append({
+            'treatment': treatment_names[j],
+            'dropped_covariates': [covariate_names[k] for k in sorted(dropped)],
+            'retained_covariates': [covariate_names[k] for k in retained],
+            'penalty_factors': {
+                covariate_names[k]: treatment_penalties[k]
+                for k in retained if treatment_penalties.get(k, 1.0) != 1.0
+            },
+            'n_retained': len(retained),
+        })
+
+    if clip is not None:
+        if len(clip) != 2 or not 0 <= clip[0] < clip[1] <= 1:
+            raise ValueError('clip must be None or a pair 0 <= lower < upper <= 1')
+        pi_updated = np.clip(pi_updated, clip[0], clip[1])
+    report = pd.DataFrame(rows, columns=[
+        'treatment', 'dropped_covariates', 'retained_covariates',
+        'penalty_factors', 'n_retained',
+    ])
+    return pi_updated, report
 
 
 def cross_fitting(

@@ -5,7 +5,238 @@ import math
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy import stats
 from sklearn.metrics import brier_score_loss, roc_auc_score
+from statsmodels.stats.multitest import multipletests
+
+
+def _coerce_named_matrix(values, names, name, generated_prefix):
+    if isinstance(values, pd.DataFrame):
+        if names is None:
+            names = list(values.columns)
+        values = values.to_numpy()
+    else:
+        values = np.asarray(values)
+    if values.ndim == 1:
+        values = values[:, None]
+    if values.ndim != 2:
+        raise ValueError(f'{name} must be one- or two-dimensional')
+    if names is None:
+        names = [f'{generated_prefix}{j + 1}' for j in range(values.shape[1])]
+    names = list(names)
+    if len(names) != values.shape[1]:
+        raise ValueError(f'{name} names must match the number of columns')
+    if len(set(names)) != len(names):
+        raise ValueError(f'{name} names must be unique')
+    return values, names
+
+
+def summarize_treatment_associations(
+    A, Z, treatment_names=None, covariate_names=None, covariate_types=None,
+):
+    """Summarize covariate association with each treatment.
+
+    Each treatment is compared with shared all-zero controls; rows assigned to
+    other treatments are excluded. Spearman p-values are adjusted together
+    across all finite treatment-by-covariate tests using the Benjamini-Hochberg
+    procedure. The returned statistics are diagnostics and do not automatically
+    identify variables that should be removed from an adjustment set.
+
+    Parameters
+    ----------
+    A : array-like, shape (n, a)
+        Binary treatment indicator matrix. DataFrame column names are retained.
+    Z : array-like, shape (n, q)
+        Observed covariates and/or estimated latent factors to diagnose.
+    treatment_names : sequence, optional
+        Treatment labels. Inferred from a DataFrame or generated when omitted.
+    covariate_names : sequence, optional
+        Covariate labels. Inferred from a DataFrame or generated when omitted.
+    covariate_types : sequence, optional
+        Labels such as ``'observed'`` and ``'latent'``. Defaults to
+        ``'observed'`` for every column.
+
+    Returns
+    -------
+    summary : DataFrame
+        Long-form table containing ``spearman_rho``, ``pvalue``, globally
+        BH-adjusted ``padj``, and ``standardized_mean_difference`` for every
+        treatment-by-covariate pair.
+    """
+    A, treatment_names = _coerce_named_matrix(
+        A, treatment_names, 'treatment', 'treatment_',
+    )
+    Z, covariate_names = _coerce_named_matrix(
+        Z, covariate_names, 'covariate', 'covariate_',
+    )
+    if A.shape[0] != Z.shape[0]:
+        raise ValueError('A and Z must have the same number of rows')
+    if not np.all(np.isin(A, (0, 1))):
+        raise ValueError('A must contain only binary treatment indicators')
+    try:
+        Z = np.asarray(Z, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('Z must contain numeric covariates') from exc
+    if not np.all(np.isfinite(Z)):
+        raise ValueError('Z must contain only finite values')
+
+    if covariate_types is None:
+        covariate_types = ['observed'] * Z.shape[1]
+    covariate_types = list(covariate_types)
+    if len(covariate_types) != Z.shape[1]:
+        raise ValueError('covariate_types must match the number of covariates')
+
+    ctrl = np.sum(A, axis=1) == 0
+    if not np.any(ctrl):
+        raise ValueError('At least one all-zero control row is required')
+
+    rows = []
+    for j, treatment in enumerate(treatment_names):
+        case = A[:, j] == 1
+        if not np.any(case):
+            raise ValueError(f'Treatment {treatment} has no treated rows')
+        eligible = ctrl | case
+        y = A[eligible, j]
+        for k, covariate in enumerate(covariate_names):
+            values = Z[eligible, k]
+            is_constant = bool(np.ptp(values) == 0)
+            if is_constant:
+                rho, pvalue = np.nan, np.nan
+            else:
+                rho, pvalue = stats.spearmanr(values, y)
+
+            control_values = Z[ctrl, k]
+            treated_values = Z[case, k]
+            if len(control_values) < 2 or len(treated_values) < 2:
+                smd = np.nan
+            else:
+                pooled_sd = np.sqrt(
+                    (np.var(control_values, ddof=1)
+                     + np.var(treated_values, ddof=1)) / 2
+                )
+                if pooled_sd == 0:
+                    smd = np.nan
+                else:
+                    smd = (
+                        np.mean(treated_values) - np.mean(control_values)
+                    ) / pooled_sd
+            rows.append({
+                'treatment': treatment,
+                'covariate': covariate,
+                'covariate_type': covariate_types[k],
+                'n_control': int(np.sum(ctrl)),
+                'n_treated': int(np.sum(case)),
+                'spearman_rho': float(rho),
+                'pvalue': float(pvalue),
+                'padj': np.nan,
+                'standardized_mean_difference': float(smd),
+                'constant': is_constant,
+            })
+
+    summary = pd.DataFrame(rows)
+    finite = np.isfinite(summary['pvalue'].to_numpy())
+    if np.any(finite):
+        summary.loc[finite, 'padj'] = multipletests(
+            summary.loc[finite, 'pvalue'], method='fdr_bh',
+        )[1]
+    return summary
+
+
+def plot_treatment_associations(
+    summary, value='spearman_rho', treatments=None, covariates=None,
+    alpha=None, ax=None,
+):
+    """Plot a heatmap of treatment-by-covariate associations.
+
+    Parameters
+    ----------
+    summary : DataFrame
+        Output from :func:`summarize_treatment_associations`.
+    value : {'spearman_rho', 'standardized_mean_difference'}, optional
+        Statistic displayed in the heatmap.
+    treatments, covariates : sequence, optional
+        Ordered subsets to display.
+    alpha : float or None, optional
+        If provided, mark cells whose globally adjusted p-value is at most
+        ``alpha``. No significance threshold is applied by default.
+    ax : matplotlib Axes, optional
+        Axes on which to draw the heatmap.
+
+    Returns
+    -------
+    fig, ax : matplotlib Figure and Axes
+        The populated figure and axes.
+    """
+    if value not in ('spearman_rho', 'standardized_mean_difference'):
+        raise ValueError(
+            "value must be 'spearman_rho' or 'standardized_mean_difference'"
+        )
+    if not isinstance(summary, pd.DataFrame):
+        raise ValueError('summary must be a pandas DataFrame')
+    required = {'treatment', 'covariate', value, 'padj'}
+    missing = required.difference(summary.columns)
+    if missing:
+        raise ValueError(f'summary is missing required columns: {sorted(missing)}')
+    if alpha is not None and not 0 < alpha <= 1:
+        raise ValueError('alpha must be None or lie in (0, 1]')
+
+    all_treatments = list(dict.fromkeys(summary['treatment']))
+    all_covariates = list(dict.fromkeys(summary['covariate']))
+    treatments = all_treatments if treatments is None else list(treatments)
+    covariates = all_covariates if covariates is None else list(covariates)
+    unknown_treatments = set(treatments).difference(all_treatments)
+    unknown_covariates = set(covariates).difference(all_covariates)
+    if unknown_treatments:
+        raise ValueError(f'Unknown treatments: {sorted(unknown_treatments)}')
+    if unknown_covariates:
+        raise ValueError(f'Unknown covariates: {sorted(unknown_covariates)}')
+    if not treatments or not covariates:
+        raise ValueError('At least one treatment and covariate must be selected')
+
+    subset = summary[
+        summary['treatment'].isin(treatments)
+        & summary['covariate'].isin(covariates)
+    ]
+    if subset.duplicated(['treatment', 'covariate']).any():
+        raise ValueError('summary contains duplicate treatment-covariate pairs')
+    matrix = subset.pivot(
+        index='treatment', columns='covariate', values=value,
+    ).reindex(index=treatments, columns=covariates)
+    adjusted = subset.pivot(
+        index='treatment', columns='covariate', values='padj',
+    ).reindex(index=treatments, columns=covariates)
+
+    if ax is None:
+        fig, ax = plt.subplots(
+            figsize=(max(6, 0.7 * len(covariates)),
+                     max(3, 0.3 * len(treatments))),
+        )
+    else:
+        fig = ax.figure
+    values = matrix.to_numpy(dtype=float)
+    finite_values = np.abs(values[np.isfinite(values)])
+    limit = float(np.max(finite_values)) if finite_values.size else 1.0
+    if limit == 0:
+        limit = 1.0
+    image = ax.imshow(values, aspect='auto', cmap='coolwarm',
+                      vmin=-limit, vmax=limit)
+    ax.set_xticks(np.arange(len(covariates)))
+    ax.set_xticklabels(covariates, rotation=45, ha='right')
+    ax.set_yticks(np.arange(len(treatments)))
+    ax.set_yticklabels(treatments)
+    ax.set_xlabel('Covariate or latent factor')
+    ax.set_ylabel('Treatment')
+    colorbar = fig.colorbar(image, ax=ax)
+    colorbar.set_label(
+        'Spearman correlation' if value == 'spearman_rho'
+        else 'Standardized mean difference'
+    )
+    if alpha is not None:
+        padj = adjusted.to_numpy(dtype=float)
+        for row, col in np.argwhere(np.isfinite(padj) & (padj <= alpha)):
+            ax.text(col, row, '*', ha='center', va='center', color='black')
+    fig.tight_layout()
+    return fig, ax
 
 
 def _coerce_treatment_inputs(A, pi_hat, treatment_names=None):

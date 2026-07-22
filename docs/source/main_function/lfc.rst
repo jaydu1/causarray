@@ -95,6 +95,52 @@ For a calibrated-propensity sensitivity analysis, use
 ``LFC(..., ps_class_weight=None)`` and diagnose the matching scores with
 ``estimate_propensity_scores(..., class_weight=None)``.
 
+Treatment-specific covariate diagnostics
+----------------------------------------
+
+``summarize_treatment_associations`` compares every observed covariate or
+latent factor with each treatment using shared all-zero controls. It reports
+pairwise Spearman correlations, standardized mean differences, and
+Benjamini--Hochberg adjusted p-values. ``plot_treatment_associations`` displays
+either effect-size measure as a heatmap. These are descriptive diagnostics:
+there is deliberately no automatic threshold or drop decision.
+
+When a scientifically justified sensitivity analysis uses a different
+propensity design for each treatment, ``refit_propensity_scores`` accepts a
+treatment-specific mapping such as ``{'Satb2': ['U9']}``. Supplying existing
+raw scores refits only the named treatment columns and preserves all others.
+For logistic L2 propensity models, ``penalty_factors_by_treatment`` can instead
+retain a covariate while shrinking its coefficient more strongly. For example,
+``{'Satb2': {'log_library_size': 10}}`` applies ten times the ordinary ridge
+penalty to standardized log-library size for Satb2 only. This weighted penalty
+is implemented by rescaling that feature during both fitting and prediction;
+it is intentionally unavailable for tree and ensemble propensity models.
+The updated scores can then be passed to ``LFC`` together with cached outcome
+predictions::
+
+   associations = summarize_treatment_associations(
+       A, W_A, covariate_names=covariate_names,
+       covariate_types=covariate_types,
+   )
+   pi_filtered, audit = refit_propensity_scores(
+       A, W_A,
+       pi_hat=estimation['pi_hat_raw'],
+       covariate_names=covariate_names,
+       penalty_factors_by_treatment={
+           'Satb2': {'log_library_size': 10},
+       },
+   )
+   filtered_results, _ = LFC(
+       Y, W, A, W_A,
+       Y_hat=estimation['Y_hat'], pi_hat=pi_filtered,
+   )
+
+Removing a treatment predictor does not create overlap in the underlying
+population and can omit a genuine measured confounder. Treat filtered fits as
+sensitivity analyses, distinguish pre-treatment covariates from possible
+post-treatment variables, and compare propensity overlap, effective sample
+sizes, and effect estimates before and after filtering.
+
 The result includes ``mean_control``, ``mean_treated``, and ``estimable``. These
 are computed from the unclipped pseudo-outcomes. For numerical stability, valid
 aggregate arm means are floored at ``thres_diff`` only when constructing the
@@ -106,7 +152,7 @@ an extreme discovery from an invalid estimate.
    :members:
 
 .. automodule:: causarray.DR_estimation
-   :members: estimate_propensity_scores
+   :members: estimate_propensity_scores, refit_propensity_scores
 
 .. automodule:: causarray.diagnostics
    :members:

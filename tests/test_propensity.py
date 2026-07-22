@@ -7,11 +7,18 @@ import numpy as np
 import pandas as pd
 import pytest
 from sklearn.metrics import brier_score_loss
+from scipy import stats
+from statsmodels.stats.multitest import multipletests
+from unittest.mock import patch
 
 from causarray import (
+    LFC,
     estimate_propensity_scores,
     plot_propensity_scores,
+    plot_treatment_associations,
+    refit_propensity_scores,
     summarize_propensity_scores,
+    summarize_treatment_associations,
 )
 from causarray.DR_estimation import cross_fitting
 
@@ -170,3 +177,194 @@ def test_propensity_summary_and_plot_for_named_treatments():
     assert plotted.equals(summary)
     assert axes.size >= 1
     plt.close(fig)
+
+
+def test_treatment_associations_use_shared_controls_and_global_bh():
+    A = pd.DataFrame(np.zeros((18, 2)), columns=['pert_a', 'pert_b'])
+    A.loc[6:11, 'pert_a'] = 1
+    A.loc[12:17, 'pert_b'] = 1
+    Z = pd.DataFrame({
+        'observed': np.r_[np.arange(6), np.arange(6) + 2, np.arange(6) + 100],
+        'constant': np.ones(18),
+    })
+
+    summary = summarize_treatment_associations(
+        A, Z, covariate_types=['observed', 'latent'],
+    )
+    row_a = summary.query("treatment == 'pert_a' and covariate == 'observed'").iloc[0]
+    eligible_a = np.r_[np.zeros(6), np.ones(6)]
+    expected_rho, expected_p = stats.spearmanr(Z['observed'][:12], eligible_a)
+    finite_p = summary['pvalue'].dropna().to_numpy()
+    expected_adjusted = multipletests(finite_p, method='fdr_bh')[1]
+
+    assert len(summary) == 4
+    assert row_a['n_control'] == 6
+    assert row_a['n_treated'] == 6
+    assert row_a['spearman_rho'] == pytest.approx(expected_rho)
+    assert row_a['pvalue'] == pytest.approx(expected_p)
+    np.testing.assert_allclose(summary['padj'].dropna(), expected_adjusted)
+    assert summary.loc[summary['covariate'] == 'constant', 'constant'].all()
+    assert summary.loc[summary['covariate'] == 'constant', 'padj'].isna().all()
+
+
+def test_plot_treatment_associations_supports_subsets_and_annotations():
+    A = pd.DataFrame(np.zeros((24, 2)), columns=['pert_a', 'pert_b'])
+    A.loc[8:15, 'pert_a'] = 1
+    A.loc[16:23, 'pert_b'] = 1
+    Z = pd.DataFrame({
+        'x': np.r_[np.zeros(8), np.ones(8), np.arange(8)],
+        'u1': np.linspace(-1, 1, 24),
+    })
+    summary = summarize_treatment_associations(
+        A, Z, covariate_types=['observed', 'latent'],
+    )
+
+    fig, ax = plot_treatment_associations(
+        summary, value='standardized_mean_difference',
+        treatments=['pert_a'], alpha=0.05,
+    )
+
+    assert [tick.get_text() for tick in ax.get_yticklabels()] == ['pert_a']
+    assert len(ax.get_xticklabels()) == 2
+    plt.close(fig)
+
+
+def test_refit_propensity_scores_updates_only_requested_treatment():
+    rng = np.random.default_rng(42)
+    A = pd.DataFrame(np.zeros((180, 2)), columns=['pert_a', 'pert_b'])
+    A.loc[60:119, 'pert_a'] = 1
+    A.loc[120:179, 'pert_b'] = 1
+    X_A = pd.DataFrame({
+        'intercept': np.ones(180),
+        'x_a': np.r_[rng.normal(-2, .2, 60), rng.normal(2, .2, 60),
+                     rng.normal(0, 1, 60)],
+        'x_b': rng.normal(size=180),
+    })
+    base = np.c_[np.full(180, 0.2), np.full(180, 0.7)]
+
+    updated, report = refit_propensity_scores(
+        A, X_A, {'pert_a': ['x_a']}, pi_hat=base, K=3,
+        random_state=5,
+    )
+
+    assert not np.array_equal(updated[:, 0], base[:, 0])
+    np.testing.assert_array_equal(updated[:, 1], base[:, 1])
+    assert report.loc[0, 'treatment'] == 'pert_a'
+    assert report.loc[0, 'dropped_covariates'] == ['x_a']
+    assert report.loc[0, 'retained_covariates'] == ['intercept', 'x_b']
+
+
+def test_refit_propensity_scores_without_base_fits_every_treatment():
+    rng = np.random.default_rng(43)
+    A = np.zeros((150, 2))
+    A[50:100, 0] = 1
+    A[100:, 1] = 1
+    X_A = np.c_[np.ones(150), rng.normal(size=(150, 2))]
+
+    updated, report = refit_propensity_scores(
+        A, X_A, {0: [1]}, covariate_names=['intercept', 'x1', 'x2'], K=3,
+    )
+    eligible = (A.sum(axis=1) == 0) | (A[:, 0] == 1)
+    expected = estimate_propensity_scores(
+        A[:, [0]], X_A[:, [0, 2]], K=3, mask=eligible[:, None],
+    )
+
+    assert updated.shape == A.shape
+    assert len(report) == 2
+    np.testing.assert_allclose(updated[:, 0], expected[:, 0])
+
+
+def test_filtered_propensity_scores_reuse_cached_outcome_predictions():
+    rng = np.random.default_rng(44)
+    n, p = 90, 3
+    A = np.zeros((n, 1))
+    A[45:, 0] = 1
+    W = np.c_[np.ones(n), rng.normal(size=(n, 2))]
+    Y = rng.poisson(2, size=(n, p)).astype(float)
+    Y_hat = np.full((n, p, 1, 2), 2.0)
+    base_pi = np.full((n, 1), 0.5)
+    updated, _ = refit_propensity_scores(
+        A, W, {0: [2]}, pi_hat=base_pi,
+        covariate_names=['intercept', 'x1', 'u1'],
+    )
+
+    with patch('causarray.DR_estimation._gcate_glm.fit_glm_auto') as outcome_fit:
+        result, estimation = LFC(
+            Y, W, A, W, family='poisson', Y_hat=Y_hat, pi_hat=updated,
+        )
+
+    outcome_fit.assert_not_called()
+    assert len(result) == p
+    np.testing.assert_allclose(estimation['Y_hat'], Y_hat)
+
+
+def test_new_diagnostics_reject_invalid_names_and_drop_lists():
+    A = pd.DataFrame({'pert': [0, 0, 1, 1]})
+    Z = np.c_[np.ones(4), np.arange(4)]
+
+    with pytest.raises(ValueError, match='unique'):
+        summarize_treatment_associations(
+            A, Z, covariate_names=['duplicate', 'duplicate'],
+        )
+    with pytest.raises(ValueError, match='Unknown covariate'):
+        refit_propensity_scores(
+            A, Z, {'pert': ['missing']}, pi_hat=np.full((4, 1), 0.5),
+            covariate_names=['intercept', 'x'],
+        )
+    with pytest.raises(ValueError, match='every covariate'):
+        refit_propensity_scores(
+            A, Z, {'pert': ['intercept', 'x']},
+            pi_hat=np.full((4, 1), 0.5),
+            covariate_names=['intercept', 'x'],
+        )
+
+
+def test_refit_propensity_scores_applies_feature_specific_l2_penalty():
+    rng = np.random.default_rng(45)
+    A = pd.DataFrame(np.zeros((180, 2)), columns=['pert_a', 'pert_b'])
+    A.loc[60:119, 'pert_a'] = 1
+    A.loc[120:179, 'pert_b'] = 1
+    X_A = pd.DataFrame({
+        'intercept': np.ones(180),
+        'library_size': rng.normal(size=180),
+        'u1': rng.normal(size=180),
+    })
+    base = np.c_[np.full(180, 0.2), np.full(180, 0.7)]
+
+    updated, report = refit_propensity_scores(
+        A, X_A, pi_hat=base,
+        penalty_factors_by_treatment={'pert_a': {'library_size': 9}},
+        K=3, random_state=6,
+    )
+    eligible = (A.to_numpy().sum(axis=1) == 0) | (A['pert_a'].to_numpy() == 1)
+    X_manual = X_A.to_numpy().copy()
+    X_manual[:, 1] /= 3
+    expected = estimate_propensity_scores(
+        A[['pert_a']], X_manual, K=3, mask=eligible[:, None], random_state=6,
+    )
+
+    np.testing.assert_allclose(updated[:, 0], expected[:, 0])
+    np.testing.assert_array_equal(updated[:, 1], base[:, 1])
+    assert report.loc[0, 'penalty_factors'] == {'library_size': 9.0}
+
+
+def test_feature_specific_penalties_validate_model_factor_and_conflicts():
+    A = pd.DataFrame({'pert': [0, 0, 1, 1]})
+    X_A = pd.DataFrame({'intercept': np.ones(4), 'library_size': np.arange(4)})
+    base = np.full((4, 1), 0.5)
+
+    with pytest.raises(ValueError, match='at least 1'):
+        refit_propensity_scores(
+            A, X_A, pi_hat=base,
+            penalty_factors_by_treatment={'pert': {'library_size': 0.5}},
+        )
+    with pytest.raises(ValueError, match='only for logistic'):
+        refit_propensity_scores(
+            A, X_A, pi_hat=base, ps_model='ensemble',
+            penalty_factors_by_treatment={'pert': {'library_size': 2}},
+        )
+    with pytest.raises(ValueError, match='both dropped and penalized'):
+        refit_propensity_scores(
+            A, X_A, {'pert': ['library_size']}, pi_hat=base,
+            penalty_factors_by_treatment={'pert': {'library_size': 2}},
+        )

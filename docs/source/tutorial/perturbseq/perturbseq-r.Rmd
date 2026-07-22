@@ -8,7 +8,6 @@ date: "`r format(Sys.time(), '%d %B, %Y')`"
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-setwd("/Users/dujinhong/Documents/study/Kathryn Roeder/Project/causarray/causarray/docs/source/tutorial/perturbseq")
 ```
 
 # Perturb-seq Tutorial (R)
@@ -44,6 +43,7 @@ A <- data.frame(
   model.matrix(~ trt_ - 1, data = perturb)[, -1, drop = FALSE],
   check.names = FALSE
 ) # cell-by-trt matrix; remove the first (GFP control) column
+colnames(A) <- sub("^trt_", "", colnames(A))
 ```
 
 For running causarray, we require the following inputs:
@@ -95,6 +95,262 @@ res <- causarray$LFC(Y, cbind(X, U), A, cbind(X_A, U), offset=offsets,
 names(res) <- c("df_res", "estimation")
 list2env(res, .GlobalEnv)
 ```
+
+## Diagnose treatment associations and overlap
+
+Positivity requires treatment and control cells with comparable covariates.
+The propensity design contains both observed covariates created by
+`prep_causarray_data` (the intercept and standardized log-library size) and
+the estimated latent factors. The association summary compares each
+perturbation with the shared all-zero GFP controls. These statistics are
+diagnostics: an observed confounder should not be removed merely because it is
+associated with treatment.
+
+```{r association-diagnostics}
+W_A <- cbind(X_A, U)
+factor_names <- paste0("U", seq_len(ncol(U)))
+propensity_names <- c("intercept", "log_library_size", factor_names)
+propensity_types <- c("observed", "observed", rep("latent", ncol(U)))
+
+association_summary <- causarray$summarize_treatment_associations(
+  A, W_A,
+  covariate_names = propensity_names,
+  covariate_types = propensity_types
+)
+observed_associations <- subset(
+  association_summary, covariate_type == "observed" & !constant
+)
+observed_associations <- observed_associations[
+  order(observed_associations$padj),
+]
+head(observed_associations, 10)
+
+latent_associations <- subset(
+  association_summary, covariate_type == "latent"
+)
+latent_associations$abs_smd <- abs(
+  latent_associations$standardized_mean_difference
+)
+latent_associations <- latent_associations[
+  order(-latent_associations$abs_smd),
+]
+head(subset(latent_associations, select = -abs_smd), 10)
+```
+
+```{r association-heatmap, echo=TRUE}
+dir.create(
+  "perturbseq-r_files/figure-markdown_github",
+  recursive = TRUE, showWarnings = FALSE
+)
+association_plot <- causarray$plot_treatment_associations(
+  association_summary
+)
+association_plot[[1]]$savefig(
+  "perturbseq-r_files/figure-markdown_github/treatment-associations-1.png",
+  dpi = 120L, bbox_inches = "tight"
+)
+knitr::asis_output(
+  "![](perturbseq-r_files/figure-markdown_github/treatment-associations-1.png)"
+)
+```
+
+We next estimate five-fold out-of-fold scores with the same balanced logistic
+model used by `LFC`. The overlap ratio is descriptive rather than a pass/fail
+threshold; the table also reports the fraction outside `[0.05, 0.95]`, inverse-
+weight effective sample size (ESS), and Brier score.
+
+```{r propensity-diagnostics}
+pi_oof <- causarray$estimate_propensity_scores(
+  A, W_A, K = 5L, class_weight = "balanced", random_state = 0L
+)
+ps_summary <- causarray$summarize_propensity_scores(A, pi_oof)
+ps_summary <- ps_summary[order(ps_summary$overlap_ratio),]
+head(ps_summary, 10)
+
+weakest <- head(ps_summary$treatment, 4)
+propensity_plot <- causarray$plot_propensity_scores(
+  A, pi_oof, treatments = as.list(weakest)
+)
+propensity_plot[[1]]$savefig(
+  "perturbseq-r_files/figure-markdown_github/propensity-overlap-1.png",
+  dpi = 120L, bbox_inches = "tight"
+)
+knitr::asis_output(
+  "![](perturbseq-r_files/figure-markdown_github/propensity-overlap-1.png)"
+)
+```
+
+Satb2 has the weakest overlap. Its latent-factor diagnostics flag U9, while
+standardized log-library size is also strongly associated with this
+perturbation. We compare dropping U9 with retaining all covariates and applying
+ten times the ordinary L2 penalty to library size only. Each refit changes the
+Satb2 propensity model but preserves the other treatment score columns. We
+check out-of-fold overlap after refitting before reusing the primary fit's
+cached outcome predictions for the effect sensitivity analyses.
+
+```{r satb2-sensitivity}
+drop_by_treatment <- list(Satb2 = "U9")
+library_penalty_factor <- 10
+library_penalties <- list(
+  Satb2 = list(log_library_size = library_penalty_factor)
+)
+
+oof_filtered <- causarray$refit_propensity_scores(
+  A, W_A,
+  drop_by_treatment = drop_by_treatment,
+  pi_hat = pi_oof,
+  covariate_names = propensity_names,
+  K = 5L, class_weight = "balanced", random_state = 0L
+)
+pi_oof_filtered <- oof_filtered[[1]]
+oof_filter_audit <- oof_filtered[[2]]
+
+oof_library_regularized <- causarray$refit_propensity_scores(
+  A, W_A,
+  pi_hat = pi_oof,
+  covariate_names = propensity_names,
+  penalty_factors_by_treatment = library_penalties,
+  K = 5L, class_weight = "balanced", random_state = 0L
+)
+pi_oof_library_regularized <- oof_library_regularized[[1]]
+library_regularization_audit <- oof_library_regularized[[2]]
+oof_filter_audit
+library_regularization_audit
+
+satb2_overlap <- rbind(
+  transform(
+    subset(causarray$summarize_propensity_scores(A, pi_oof),
+           treatment == "Satb2"),
+    model = "all factors"
+  ),
+  transform(
+    subset(causarray$summarize_propensity_scores(A, pi_oof_filtered),
+           treatment == "Satb2"),
+    model = "drop U9"
+  ),
+  transform(
+    subset(causarray$summarize_propensity_scores(
+             A, pi_oof_library_regularized), treatment == "Satb2"),
+    model = "10x library-size penalty"
+  )
+)
+satb2_overlap[, c(
+  "model", "overlap_ratio", "outside_overlap_fraction",
+  "ess_control_fraction", "ess_treated_fraction", "brier_score"
+)]
+
+regularized_plot <- causarray$plot_propensity_scores(
+  A, pi_oof_library_regularized, treatments = list("Satb2")
+)
+invisible(regularized_plot[[1]]$suptitle(
+  "Satb2 after 10x library-size penalty", y = 1.02
+))
+regularized_plot[[1]]$savefig(
+  "perturbseq-r_files/figure-markdown_github/satb2-library-penalty-1.png",
+  dpi = 120L, bbox_inches = "tight"
+)
+knitr::asis_output(
+  "![](perturbseq-r_files/figure-markdown_github/satb2-library-penalty-1.png)"
+)
+
+analysis_filtered <- causarray$refit_propensity_scores(
+  A, W_A,
+  drop_by_treatment = drop_by_treatment,
+  pi_hat = estimation[["pi_hat_raw"]],
+  covariate_names = propensity_names,
+  K = 1L, class_weight = "balanced", random_state = 0L
+)
+analysis_library_regularized <- causarray$refit_propensity_scores(
+  A, W_A,
+  pi_hat = estimation[["pi_hat_raw"]],
+  covariate_names = propensity_names,
+  penalty_factors_by_treatment = library_penalties,
+  K = 1L, class_weight = "balanced", random_state = 0L
+)
+
+filtered_fit <- causarray$LFC(
+  Y, cbind(X, U), A, W_A,
+  offset = offsets, usevar = "pooled",
+  Y_hat = estimation[["Y_hat"]], pi_hat = analysis_filtered[[1]]
+)
+library_regularized_fit <- causarray$LFC(
+  Y, cbind(X, U), A, W_A,
+  offset = offsets, usevar = "pooled",
+  Y_hat = estimation[["Y_hat"]],
+  pi_hat = analysis_library_regularized[[1]]
+)
+
+satb2_all <- subset(
+  df_res, trt == "Satb2", select = c(gene_names, tau, padj)
+)
+names(satb2_all)[-1] <- c("tau_all", "padj_all")
+satb2_filtered <- subset(
+  filtered_fit[[1]], trt == "Satb2",
+  select = c(gene_names, tau, padj)
+)
+names(satb2_filtered)[-1] <- c("tau_drop_u9", "padj_drop_u9")
+satb2_library <- subset(
+  library_regularized_fit[[1]], trt == "Satb2",
+  select = c(gene_names, tau, padj)
+)
+names(satb2_library)[-1] <- c(
+  "tau_library_penalty", "padj_library_penalty"
+)
+satb2_effects <- Reduce(
+  function(left, right) merge(left, right, by = "gene_names"),
+  list(satb2_all, satb2_filtered, satb2_library)
+)
+sensitivity_summary <- data.frame(
+  model = c("drop U9", "10x library-size penalty"),
+  effect_correlation = c(
+    cor(satb2_effects$tau_all, satb2_effects$tau_drop_u9),
+    cor(satb2_effects$tau_all, satb2_effects$tau_library_penalty)
+  ),
+  median_absolute_change = c(
+    median(abs(satb2_effects$tau_all - satb2_effects$tau_drop_u9)),
+    median(abs(satb2_effects$tau_all -
+                 satb2_effects$tau_library_penalty))
+  ),
+  discoveries = c(
+    sum(satb2_effects$padj_drop_u9 < 0.1, na.rm = TRUE),
+    sum(satb2_effects$padj_library_penalty < 0.1, na.rm = TRUE)
+  ),
+  discoveries_all = sum(satb2_effects$padj_all < 0.1, na.rm = TRUE)
+)
+sensitivity_summary
+
+baseline_overlap <- subset(satb2_overlap, model == "all factors")
+regularized_overlap <- subset(
+  satb2_overlap, model == "10x library-size penalty"
+)
+regularized_effects <- subset(
+  sensitivity_summary, model == "10x library-size penalty"
+)
+```
+
+**Sensitivity interpretation.** Applying a 10-fold L2 penalty to library size
+alone raises Satb2's overlap ratio from
+`r sprintf("%.3f", baseline_overlap$overlap_ratio)` to
+`r sprintf("%.3f", regularized_overlap$overlap_ratio)`, reduces the fraction
+outside `[0.05, 0.95]` from
+`r sprintf("%.1f%%", 100 * baseline_overlap$outside_overlap_fraction)` to
+`r sprintf("%.1f%%", 100 * regularized_overlap$outside_overlap_fraction)`, and
+raises the control ESS fraction from
+`r sprintf("%.1f%%", 100 * baseline_overlap$ess_control_fraction)` to
+`r sprintf("%.1f%%", 100 * regularized_overlap$ess_control_fraction)`. Its
+out-of-fold Brier score changes from
+`r sprintf("%.3f", baseline_overlap$brier_score)` to
+`r sprintf("%.3f", regularized_overlap$brier_score)`, indicating that the
+overlap gain reflects stronger smoothing rather than better out-of-fold
+propensity prediction. The corresponding effects remain highly similar overall
+(correlation `r sprintf("%.3f", regularized_effects$effect_correlation)`), and
+the change in discoveries from
+`r format(regularized_effects$discoveries_all, big.mark = ",", trim = TRUE)` to
+`r format(regularized_effects$discoveries, big.mark = ",", trim = TRUE)` is
+acceptable for this regularized sensitivity analysis rather than evidence of
+substantive instability. We retain the original propensity specification as
+the primary analysis and report both filtered specifications as sensitivities;
+neither establishes positivity that is absent in the data.
 
 
 ```{r, fig.width=12, fig.height=6}
