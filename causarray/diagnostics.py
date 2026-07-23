@@ -1,6 +1,7 @@
-"""Diagnostics for treatment overlap and propensity-score quality."""
+"""Diagnostics for treatment overlap, propensity scores, and result masks."""
 
 import math
+from typing import Hashable, Optional, Sequence, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,6 +9,165 @@ import pandas as pd
 from scipy import stats
 from sklearn.metrics import brier_score_loss, roc_auc_score
 from statsmodels.stats.multitest import multipletests
+
+
+_TestMask = Union[np.ndarray, pd.DataFrame, pd.Series]
+
+
+def _normalize_test_labels(values, name):
+    raw_labels = pd.Index(values)
+    if raw_labels.hasnans:
+        raise ValueError(f'{name} names must not be missing')
+    labels = pd.Index([str(value) for value in raw_labels], dtype=object)
+    if labels.has_duplicates:
+        duplicates = labels[labels.duplicated()].unique().tolist()
+        raise ValueError(f'{name} names must be unique; duplicates: {duplicates}')
+    return labels
+
+
+def _require_boolean_mask(values):
+    values = np.asarray(values)
+    if values.dtype.kind != 'b':
+        raise ValueError('test_mask must contain only Boolean values')
+    return values
+
+
+def align_test_mask(
+    results: pd.DataFrame,
+    test_mask: _TestMask,
+    treatment_names: Optional[Sequence[Hashable]] = None,
+    gene_names: Optional[Sequence[Hashable]] = None,
+    treatment_col: str = 'trt',
+    gene_col: str = 'gene_names',
+) -> np.ndarray:
+    """Align a treatment-by-gene diagnostic mask to an LFC result table.
+
+    Alignment uses treatment and gene labels rather than row position. This
+    makes it possible to annotate or subset existing causarray results with a
+    post-hoc diagnostic rule without refitting effects or changing their
+    standard errors and p-values. Labels are compared after conversion to
+    strings, matching the labeling convention of batch LFC results.
+
+    Parameters
+    ----------
+    results : DataFrame
+        Result table containing one row per treatment-gene test.
+    test_mask : ndarray, DataFrame, or Series
+        Boolean diagnostic mask. A two-dimensional array requires
+        ``treatment_names`` and ``gene_names``. A DataFrame uses its index as
+        treatment names and columns as gene names unless names are supplied
+        explicitly. A Series must have a two-level ``(treatment, gene)``
+        MultiIndex.
+    treatment_names, gene_names : sequence, optional
+        Labels for the rows and columns of a two-dimensional mask.
+    treatment_col, gene_col : str, optional
+        Columns containing treatment and gene labels in ``results``.
+
+    Returns
+    -------
+    aligned : ndarray of bool, shape (n_tests,)
+        Mask values in the original row order of ``results``.
+
+    Raises
+    ------
+    ValueError
+        If labels are missing or duplicated, the mask is malformed or
+        non-Boolean, or a result test is absent from the mask.
+
+    Notes
+    -----
+    This function only aligns a diagnostic mask. It does not modify the
+    multiple-testing family or recompute adjusted p-values.
+
+    .. versionadded:: 0.0.9
+    """
+    if not isinstance(results, pd.DataFrame):
+        raise ValueError('results must be a pandas DataFrame')
+    missing_columns = {treatment_col, gene_col}.difference(results.columns)
+    if missing_columns:
+        raise ValueError(
+            f'results is missing required columns: {sorted(missing_columns)}'
+        )
+    if results[[treatment_col, gene_col]].isna().any().any():
+        raise ValueError('result treatment and gene labels must not be missing')
+
+    result_keys = pd.MultiIndex.from_arrays([
+        results[treatment_col].astype(str),
+        results[gene_col].astype(str),
+    ])
+    if result_keys.has_duplicates:
+        duplicates = result_keys[result_keys.duplicated()].unique().tolist()
+        raise ValueError(
+            'results contains duplicate treatment-gene tests: '
+            f'{duplicates[:5]}'
+        )
+
+    if isinstance(test_mask, pd.Series):
+        if treatment_names is not None or gene_names is not None:
+            raise ValueError(
+                'treatment_names and gene_names must be omitted for a Series mask'
+            )
+        if (
+            not isinstance(test_mask.index, pd.MultiIndex)
+            or test_mask.index.nlevels != 2
+        ):
+            raise ValueError(
+                'a Series test_mask must have a two-level treatment-gene MultiIndex'
+            )
+        values = _require_boolean_mask(test_mask.to_numpy())
+        raw_treatments = pd.Index(test_mask.index.get_level_values(0))
+        raw_genes = pd.Index(test_mask.index.get_level_values(1))
+        if raw_treatments.hasnans or raw_genes.hasnans:
+            raise ValueError(
+                'test_mask treatment and gene labels must not be missing'
+            )
+        treatment_index = pd.Index(
+            [str(value) for value in raw_treatments], dtype=object,
+        )
+        gene_index = pd.Index(
+            [str(value) for value in raw_genes], dtype=object,
+        )
+        mask_index = pd.MultiIndex.from_arrays([treatment_index, gene_index])
+        if mask_index.has_duplicates:
+            duplicates = mask_index[mask_index.duplicated()].unique().tolist()
+            raise ValueError(
+                'test_mask contains duplicate treatment-gene tests: '
+                f'{duplicates[:5]}'
+            )
+        lookup = pd.Series(values, index=mask_index)
+    else:
+        if isinstance(test_mask, pd.DataFrame):
+            values = _require_boolean_mask(test_mask.to_numpy())
+            if treatment_names is None:
+                treatment_names = list(test_mask.index)
+            if gene_names is None:
+                gene_names = list(test_mask.columns)
+        else:
+            values = _require_boolean_mask(test_mask)
+        if values.ndim != 2:
+            raise ValueError('test_mask must be two-dimensional')
+        if treatment_names is None or gene_names is None:
+            raise ValueError(
+                'treatment_names and gene_names are required for an array mask'
+            )
+        treatments = _normalize_test_labels(treatment_names, 'treatment')
+        genes = _normalize_test_labels(gene_names, 'gene')
+        expected_shape = (len(treatments), len(genes))
+        if values.shape != expected_shape:
+            raise ValueError(
+                f'test_mask has shape {values.shape}; expected {expected_shape}'
+            )
+        mask_index = pd.MultiIndex.from_product([treatments, genes])
+        lookup = pd.Series(values.ravel(), index=mask_index)
+
+    aligned = lookup.reindex(result_keys)
+    if aligned.isna().any():
+        missing = result_keys[aligned.isna().to_numpy()].unique().tolist()
+        raise ValueError(
+            'test_mask is missing treatment-gene tests required by results: '
+            f'{missing[:5]}'
+        )
+    return aligned.to_numpy(dtype=bool)
 
 
 def _coerce_named_matrix(values, names, name, generated_prefix):

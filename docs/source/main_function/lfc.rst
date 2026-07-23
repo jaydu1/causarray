@@ -141,6 +141,29 @@ sensitivity analyses, distinguish pre-treatment covariates from possible
 post-treatment variables, and compare propensity overlap, effective sample
 sizes, and effect estimates before and after filtering.
 
+Post-hoc diagnostic masks
+-------------------------
+
+``align_test_mask`` aligns a Boolean treatment-by-gene diagnostic mask to an
+existing causarray result table by ``(trt, gene_names)`` labels. It accepts a
+named DataFrame, a two-level indexed Series, or an array with explicit
+treatment and gene names. The returned one-dimensional mask follows the
+original row order of the result table, so it remains correct for reordered or
+batched results::
+
+   keep = align_test_mask(
+       df_res, support_mask,
+       treatment_names=perturbation_names,
+       gene_names=gene_names,
+   )
+   df_res_flagged = df_res.assign(support_keep=keep)
+
+Mask alignment does not refit effects, mutate ``df_res``, or change standard
+errors and p-values. A mask chosen after inspecting outcomes should be reported
+as a sensitivity diagnostic; retain the original BH-adjusted p-values rather
+than redefining the testing family post hoc. The Replogle tutorial demonstrates
+this workflow for several expression-support rules.
+
 The result includes ``mean_control``, ``mean_treated``, and ``estimable``. These
 are computed from the unclipped pseudo-outcomes. For numerical stability, valid
 aggregate arm means are floored at ``thres_diff`` only when constructing the

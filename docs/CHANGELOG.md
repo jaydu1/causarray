@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.0.9] - 2026-07-23
+
+### Added
+
+- `align_test_mask()` aligns named treatment-by-gene diagnostic masks to
+  existing causarray result tables without refitting effects or changing
+  inference.
+- `summarize_treatment_associations()` and
+  `plot_treatment_associations()` diagnose treatment associations with both
+  observed covariates and estimated latent factors.
+- `refit_propensity_scores()` supports treatment-specific covariate removal and
+  feature-specific logistic L2 penalties while preserving untreated score
+  columns and reusable outcome predictions.
+- The Replogle tutorial now compares Wilcoxon and causarray effect estimates in
+  the extreme negative LFC tail, reports expression support, and demonstrates
+  diagnostic support rules.
+
+### Changed
+
+- Perturb-seq propensity diagnostics now include observed library size and a
+  treatment-specific library-size regularization sensitivity analysis.
+- Public diagnostics are documented in the README and LFC API guide, including
+  the distinction between post-hoc result annotation and formal refitting or
+  multiple-testing changes.
+
 ## [0.0.8] - 2026-07-20
 
 ### Added

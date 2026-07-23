@@ -73,6 +73,30 @@ df_res = gcate_lfc_batch(
 See the [Replogle-E-K562 tutorial](https://causarray.readthedocs.io/en/latest/tutorial/replogle/replogle-py.html)
 for a demonstration on 200 perturbations from a genome-wide CRISPRi screen.
 
+### Diagnostic masks without refitting effects
+
+Treatment-by-gene support or quality-control rules can be aligned to an
+existing causarray result table by label, even when its rows are reordered:
+
+```python
+from causarray import align_test_mask
+
+keep = align_test_mask(
+    df_res,
+    support_mask,                 # treatments × genes, Boolean
+    treatment_names=perturbations,
+    gene_names=genes,
+)
+df_res_flagged = df_res.assign(support_keep=keep)
+```
+
+This operation only annotates or subsets existing results. It does not refit
+the causarray LFC or change standard errors and p-values. If a diagnostic rule
+was selected after inspecting the outcomes, retain the original adjusted
+p-values rather than redefining the multiple-testing family post hoc. The
+[Replogle tutorial](https://causarray.readthedocs.io/en/latest/tutorial/replogle/replogle-py.html)
+compares several expression-support rules with marginal Wilcoxon results.
+
 ## Changelog
 
 See [CHANGELOG](https://causarray.readthedocs.io/en/latest/changelog.html) for a full version history.

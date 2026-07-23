@@ -13,6 +13,7 @@ __all__ = [
     'estimate_propensity_scores', 'summarize_propensity_scores',
     'plot_propensity_scores', 'refit_propensity_scores',
     'summarize_treatment_associations', 'plot_treatment_associations',
+    'align_test_mask',
     ]
 
 
@@ -21,6 +22,7 @@ from causarray.DR_estimation import estimate_propensity_scores, refit_propensity
 from causarray.diagnostics import (
     summarize_propensity_scores, plot_propensity_scores,
     summarize_treatment_associations, plot_treatment_associations,
+    align_test_mask,
 )
 from causarray.gcate_glm import fit_glm
 from causarray.nb_glm_fast import fit_glm_fast, fit_glm_ondisk
