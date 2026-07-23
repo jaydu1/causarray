@@ -165,6 +165,12 @@ exclude_patterns = ['_build', '**.ipynb_checkpoints', '**.h5ad', 'tutorial/adams
 html_theme = 'sphinx_book_theme'
 html_static_path = ['_static']
 
+# Expand the in-page "Contents" sidebar down to subsections (e.g. the numbered
+# 5.1-5.5 subsections of the tutorials) instead of top-level sections only.
+html_theme_options = {
+    'show_toc_level': 2,
+}
+
 
 
 

@@ -368,3 +368,167 @@ def test_feature_specific_penalties_validate_model_factor_and_conflicts():
             A, X_A, {'pert': ['library_size']}, pi_hat=base,
             penalty_factors_by_treatment={'pert': {'library_size': 2}},
         )
+
+
+def _two_treatment_design(n=180, seed=11):
+    """Balanced two-treatment design with genuine all-zero controls."""
+    rng = np.random.default_rng(seed)
+    A = pd.DataFrame(np.zeros((n, 2)), columns=['pert_a', 'pert_b'])
+    A.iloc[n // 3:2 * n // 3, 0] = 1
+    A.iloc[2 * n // 3:, 1] = 1
+    X_A = pd.DataFrame({
+        'intercept': np.ones(n),
+        'library_size': rng.normal(size=n),
+        'u1': rng.normal(size=n),
+    })
+    return A, X_A
+
+
+@pytest.mark.parametrize('clip', [0.01, (0.5,), (0.1, 0.2, 0.3), 'wide'])
+def test_clip_rejects_values_that_are_not_bound_pairs(clip):
+    A, X_A = _two_treatment_design()
+
+    with pytest.raises(ValueError, match='clip must be None or a pair'):
+        estimate_propensity_scores(A, X_A, clip=clip)
+    with pytest.raises(ValueError, match='clip must be None or a pair'):
+        refit_propensity_scores(A, X_A, clip=clip)
+
+
+def test_refit_clip_also_bounds_carried_over_columns():
+    """The documented contract: clip covers refit and carried-over columns."""
+    A, X_A = _two_treatment_design()
+    base = np.full((len(A), 2), 0.001)
+
+    unclipped, _ = refit_propensity_scores(
+        A, X_A, pi_hat=base, drop_by_treatment={'pert_a': ['u1']}, clip=None,
+    )
+    clipped, _ = refit_propensity_scores(
+        A, X_A, pi_hat=base, drop_by_treatment={'pert_a': ['u1']},
+        clip=(0.01, 0.99),
+    )
+
+    # 'pert_b' is never refitted: preserved exactly without clip, bounded with it.
+    np.testing.assert_array_equal(unclipped[:, 1], base[:, 1])
+    np.testing.assert_array_equal(clipped[:, 1], np.full(len(A), 0.01))
+    assert clipped[:, 0].min() >= 0.01 and clipped[:, 0].max() <= 0.99
+
+
+def test_refit_warns_and_reports_degenerate_design():
+    A, X_A = _two_treatment_design()
+
+    with pytest.warns(RuntimeWarning, match='constant after filtering'):
+        scores, report = refit_propensity_scores(
+            A, X_A, drop_by_treatment={'pert_a': ['library_size', 'u1']},
+        )
+
+    indexed = report.set_index('treatment')
+    assert bool(indexed.loc['pert_a', 'degenerate_design'])
+    assert not bool(indexed.loc['pert_b', 'degenerate_design'])
+    assert indexed.loc['pert_a', 'n_retained'] == 1
+    assert indexed.loc['pert_a', 'score_std'] == pytest.approx(0.0)
+    # class_weight='balanced' on a constant design falls back to 0.5.
+    np.testing.assert_allclose(scores[:, 0], 0.5)
+
+
+def test_extreme_penalty_collapse_is_visible_without_being_degenerate():
+    A, X_A = _two_treatment_design()
+
+    _, mild = refit_propensity_scores(
+        A, X_A, penalty_factors_by_treatment={'pert_a': {'library_size': 1}},
+    )
+    _, harsh = refit_propensity_scores(
+        A, X_A, penalty_factors_by_treatment={
+            'pert_a': {'library_size': 1e6, 'u1': 1e6},
+        },
+    )
+
+    assert not harsh.loc[0, 'degenerate_design']
+    assert harsh.loc[0, 'score_std'] < 1e-3 < mild.loc[0, 'score_std']
+
+
+def test_refit_supports_cross_fitting_with_an_explicit_mask():
+    A, X_A = _two_treatment_design(n=240, seed=3)
+    keep = np.ones((len(A), 2), dtype=bool)
+    keep[:20] = False  # drop some controls from the fitting sample
+
+    scores, report = refit_propensity_scores(
+        A, X_A, drop_by_treatment={'pert_a': ['u1']}, K=3, mask=keep,
+        random_state=4,
+    )
+
+    eligible = (A.to_numpy().sum(axis=1) == 0) | (A['pert_a'].to_numpy() == 1)
+    expected = estimate_propensity_scores(
+        A[['pert_a']], X_A[['intercept', 'library_size']], K=3,
+        mask=(eligible & keep[:, 0])[:, None], random_state=4,
+    )
+    np.testing.assert_allclose(scores[:, 0], expected[:, 0])
+    assert not report.loc[0, 'degenerate_design']
+
+
+def test_association_heatmap_uses_fixed_limits_for_bounded_correlations():
+    A, X_A = _two_treatment_design()
+    Z = 0.01 * X_A[['library_size', 'u1']].to_numpy()
+    summary = summarize_treatment_associations(
+        A, Z, covariate_names=['library_size', 'u1'],
+    )
+
+    _, rho_ax = plot_treatment_associations(summary)
+    _, override_ax = plot_treatment_associations(summary, vmax=0.25)
+    _, smd_ax = plot_treatment_associations(
+        summary, value='standardized_mean_difference',
+    )
+
+    assert rho_ax.images[0].get_clim() == (-1.0, 1.0)
+    assert override_ax.images[0].get_clim() == (-0.25, 0.25)
+    smd_limit = smd_ax.images[0].get_clim()[1]
+    assert smd_limit == pytest.approx(
+        np.nanmax(np.abs(summary['standardized_mean_difference']))
+    )
+    with pytest.raises(ValueError, match='vmax must be None'):
+        plot_treatment_associations(summary, vmax=0)
+    plt.close('all')
+
+
+def test_summary_reports_unknown_clipping_for_raw_scores():
+    A, X_A = _two_treatment_design()
+    raw = estimate_propensity_scores(A, X_A, clip=None)
+
+    assumed = summarize_propensity_scores(A, raw)
+    unknown = summarize_propensity_scores(A, raw, clip_bounds=None)
+
+    assert assumed['clipped_fraction'].notna().all()
+    assert unknown['clipped_fraction'].isna().all()
+
+    _, _, plotted = plot_propensity_scores(A, raw, clip_bounds=None)
+    assert plotted['clipped_fraction'].isna().all()
+    plt.close('all')
+
+
+def test_treatment_associations_support_per_treatment_bh():
+    A, X_A = _two_treatment_design(n=300, seed=8)
+    Z = X_A[['library_size', 'u1']].to_numpy()
+
+    glob = summarize_treatment_associations(
+        A, Z, covariate_names=['library_size', 'u1'],
+    )
+    per = summarize_treatment_associations(
+        A, Z, covariate_names=['library_size', 'u1'], bh_scope='per_treatment',
+    )
+
+    assert (glob['n_tests_in_family'] == 4).all()
+    assert (per['n_tests_in_family'] == 2).all()
+    np.testing.assert_allclose(per['pvalue'], glob['pvalue'])
+    # Each scope is exactly BH over its own family. Note that a smaller family
+    # is not uniformly less conservative: BH is a step-up procedure, so an
+    # individual padj can move either way.
+    np.testing.assert_allclose(
+        glob['padj'], multipletests(glob['pvalue'], method='fdr_bh')[1],
+    )
+    for treatment in ('pert_a', 'pert_b'):
+        block = per[per['treatment'] == treatment]
+        np.testing.assert_allclose(
+            block['padj'], multipletests(block['pvalue'], method='fdr_bh')[1],
+        )
+
+    with pytest.raises(ValueError, match="bh_scope must be"):
+        summarize_treatment_associations(A, Z, bh_scope='per_covariate')

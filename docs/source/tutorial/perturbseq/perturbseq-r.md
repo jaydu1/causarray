@@ -1,5 +1,4 @@
-Perturb-seq Tutorial (R)
-========================
+# Perturb-seq Tutorial (R)
 
 The original data of Jin et al 2020 can be downloaded from the Broad
 single cell portal
@@ -77,7 +76,7 @@ causarray <- import("causarray")
 cat(causarray$`__version__`)
 ```
 
-    ## 0.0.8
+    ## 0.0.9
 
 ``` r
 # (Y, A) should be either data.frame or matrix
@@ -93,7 +92,13 @@ We first apply gcate to estimate unmeasured confounders.
 
 ``` r
 r <- 10
-res_gate <- causarray$fit_gcate(Y, X, A, r, verbose=TRUE) # a list of results from 2 stages optimization
+# Same early-stopping settings as the Python tutorial, so both produce
+# identical latent factors on this dataset.
+res_gate <- causarray$fit_gcate(
+  Y, X, A, r, verbose = TRUE,
+  kwargs_es_1 = list(rel_tol = 2e-4, max_iters = 30L),
+  kwargs_es_2 = list(rel_tol = 2e-4, max_iters = 30L)
+) # a list of results from 2 stages optimization
 ```
 
     ## {'d': 30, 'n': 2926, 'p': 3221, 'r': 10}
@@ -101,7 +106,7 @@ res_gate <- causarray$fit_gcate(Y, X, A, r, verbose=TRUE) # a list of results fr
     ## 'Fitting nb GLM (fast)...'
     ## 'Estimating initial coefficients with GLMs...'
     ## 'Fitting nb GLM (fast)...'
-    ## {'kwargs_es': {'max_iters': 50,
+    ## {'kwargs_es': {'max_iters': 30,
     ##                'patience': 5,
     ##                'rel_tol': 0.0002,
     ##                'tolerance': 0.0,
@@ -124,7 +129,7 @@ res_gate <- causarray$fit_gcate(Y, X, A, r, verbose=TRUE) # a list of results fr
     ##                'warmup_iters': 0}}
     ## 'Fitting GCATE (step 1)...'
     ## {'d': 30, 'n': 2926, 'p': 3221, 'r': 10}
-    ## {'kwargs_es': {'max_iters': 50,
+    ## {'kwargs_es': {'max_iters': 30,
     ##                'patience': 5,
     ##                'rel_tol': 0.0002,
     ##                'tolerance': 0.0,
@@ -149,7 +154,19 @@ res_gate <- causarray$fit_gcate(Y, X, A, r, verbose=TRUE) # a list of results fr
 
 ``` r
 U <- res_gate[[2]]$U
+# reticulate returns `hist` as an R list, so unlist() before min().
+cat(sprintf("Step 1 -- epochs: %d, best NLL: %.6f\n",
+            as.integer(res_gate[[1]]$n_iter), min(unlist(res_gate[[1]]$hist))))
 ```
+
+    ## Step 1 -- epochs: 29, best NLL: 1.705777
+
+``` r
+cat(sprintf("Step 2 -- epochs: %d, best NLL: %.6f\n",
+            as.integer(res_gate[[2]]$n_iter), min(unlist(res_gate[[2]]$hist))))
+```
+
+    ## Step 2 -- epochs: 29, best NLL: 1.722559
 
 Next, we apply causarray to estimate the causal effects of perturbations
 on gene expression. Here the 106 GFP control cells and the perturbation
@@ -180,7 +197,7 @@ res <- causarray$LFC(Y, cbind(X, U), A, cbind(X_A, U), offset=offsets,
     ##  'verbose': False}
     ## 'Fit outcome models...'
     ## 'Fitting nb GLM (fast)...'
-    ## ('Fast GLM coefficients exceed bound (max|B|=1.63e+05 > 1e+04); falling back '
+    ## ('Fast GLM coefficients exceed bound (max|B|=1.53e+05 > 1e+04); falling back '
     ##  'to statsmodels...')
     ## 'Estimating dispersion parameter...'
     ## 'Fitting poisson GLM with offset...'
@@ -195,16 +212,17 @@ list2env(res, .GlobalEnv)
 
     ## <environment: R_GlobalEnv>
 
-Diagnose treatment associations and overlap
--------------------------------------------
+## Diagnose treatment associations and overlap
 
-Positivity requires treatment and control cells with comparable
-covariates. The propensity design contains both observed covariates
-created by `prep_causarray_data` (the intercept and standardized
-log-library size) and the estimated latent factors. The association
-summary compares each perturbation with the shared all-zero GFP
-controls. These statistics are diagnostics: an observed confounder
-should not be removed merely because it is associated with treatment.
+Positivity requires treated and control cells with comparable
+covariates. The propensity design holds the observed covariates built by
+`prep_causarray_data` (the intercept and standardized log-library size)
+together with the estimated latent factors. The association summary
+compares each perturbation with the shared all-zero GFP controls,
+BH-adjusting across every treatment-by-covariate pair; pass
+`bh_scope = "per_treatment"` to adjust within each treatment instead.
+These are diagnostics only — association alone is not a reason to drop
+an observed covariate.
 
 ``` r
 W_A <- cbind(X_A, U)
@@ -248,6 +266,17 @@ head(observed_associations, 10)
     ## 14  1.003845e-09 3.710293e-08                   -0.8068996    FALSE
     ## 254 1.046791e-09 3.710293e-08                   -0.9526579    FALSE
     ## 110 1.730357e-09 5.519838e-08                   -0.8442098    FALSE
+    ##     n_tests_in_family
+    ## 218               319
+    ## 134               319
+    ## 26                319
+    ## 326               319
+    ## 230               319
+    ## 146               319
+    ## 242               319
+    ## 14                319
+    ## 254               319
+    ## 110               319
 
 ``` r
 latent_associations <- subset(
@@ -263,27 +292,38 @@ head(subset(latent_associations, select = -abs_smd), 10)
 ```
 
     ##     treatment covariate covariate_type n_control n_treated spearman_rho
-    ## 227     Satb2        U9         latent       106        51   -0.3265056
-    ## 228     Satb2       U10         latent       106        51   -0.2745888
-    ## 156    Med13l       U10         latent       106        75   -0.2846287
-    ## 226     Satb2        U8         latent       106        51   -0.3265056
-    ## 144      Mbd5       U10         latent       106       119   -0.2341390
-    ## 153    Med13l        U7         latent       106        75   -0.1824543
-    ## 36      Asxl3       U10         latent       106       130   -0.2183243
-    ## 225     Satb2        U7         latent       106        51    0.2460796
-    ## 240    Scn2a1       U10         latent       106        93   -0.2018013
-    ## 336     Upf3b       U10         latent       106       100   -0.2200104
-    ##           pvalue         padj standardized_mean_difference constant
-    ## 227 3.001268e-05 0.0003989185                   -0.7342411    FALSE
-    ## 228 5.009732e-04 0.0053270147                   -0.6212857    FALSE
-    ## 156 1.030101e-04 0.0013144089                   -0.5894248    FALSE
-    ## 226 3.001268e-05 0.0003989185                   -0.5629788    FALSE
-    ## 144 3.972790e-04 0.0043700685                   -0.4686546    FALSE
-    ## 153 1.395825e-02 0.1086020002                   -0.4680370    FALSE
-    ## 36  7.328527e-04 0.0075412907                   -0.4481183    FALSE
-    ## 225 1.892240e-03 0.0177536596                    0.4434756    FALSE
-    ## 240 4.259310e-03 0.0377422207                   -0.4039392    FALSE
-    ## 336 1.485232e-03 0.0143572436                   -0.3873724    FALSE
+    ## 227     Satb2        U9         latent       106        51   -0.2472800
+    ## 228     Satb2       U10         latent       106        51   -0.1902615
+    ## 156    Med13l       U10         latent       106        75   -0.2054220
+    ## 226     Satb2        U8         latent       106        51   -0.2424784
+    ## 144      Mbd5       U10         latent       106       119   -0.1750560
+    ## 153    Med13l        U7         latent       106        75   -0.1019597
+    ## 36      Asxl3       U10         latent       106       130   -0.1608048
+    ## 225     Satb2        U7         latent       106        51    0.2064668
+    ## 240    Scn2a1       U10         latent       106        93   -0.1481513
+    ## 336     Upf3b       U10         latent       106       100   -0.1639870
+    ##          pvalue       padj standardized_mean_difference constant
+    ## 227 0.001794526 0.02289815                   -0.5209986    FALSE
+    ## 228 0.016997402 0.15491918                   -0.4292357    FALSE
+    ## 156 0.005534232 0.06087655                   -0.4113753    FALSE
+    ## 226 0.002215118 0.02717780                   -0.4064899    FALSE
+    ## 144 0.008499250 0.08746002                   -0.3282039    FALSE
+    ## 153 0.172005959 0.88370491                   -0.3197265    FALSE
+    ## 36  0.013386045 0.12559260                   -0.3149056    FALSE
+    ## 225 0.009476622 0.09447007                    0.3137169    FALSE
+    ## 240 0.036770525 0.30867888                   -0.2849321    FALSE
+    ## 336 0.018507723 0.16399899                   -0.2724256    FALSE
+    ##     n_tests_in_family
+    ## 227               319
+    ## 228               319
+    ## 156               319
+    ## 226               319
+    ## 144               319
+    ## 153               319
+    ## 36                319
+    ## 225               319
+    ## 240               319
+    ## 336               319
 
 ``` r
 dir.create(
@@ -305,58 +345,50 @@ knitr::asis_output(
 ![](perturbseq-r_files/figure-markdown_github/treatment-associations-1.png)
 
 We next estimate five-fold out-of-fold scores with the same balanced
-logistic model used by `LFC`. The overlap ratio is descriptive rather
-than a pass/fail threshold; the table also reports the fraction outside
-`[0.05, 0.95]`, inverse- weight effective sample size (ESS), and Brier
-score.
+logistic model `LFC` uses internally. The overlap ratio is descriptive
+rather than a pass/fail threshold; the table also reports the fraction
+outside `[0.05, 0.95]`, the inverse-weight effective sample size (ESS),
+and the Brier score. These scores are raw, so we pass
+`clip_bounds = NULL` and `clipped_fraction` comes back as `NA` instead
+of a misleading zero.
 
 ``` r
 pi_oof <- causarray$estimate_propensity_scores(
   A, W_A, K = 5L, class_weight = "balanced", random_state = 0L
 )
-ps_summary <- causarray$summarize_propensity_scores(A, pi_oof)
+ps_summary <- causarray$summarize_propensity_scores(
+  A, pi_oof, clip_bounds = NULL
+)
 ps_summary <- ps_summary[order(ps_summary$overlap_ratio),]
-head(ps_summary, 10)
+head(ps_summary[, c(
+  "treatment", "n_treated", "overlap_ratio", "outside_overlap_fraction",
+  "ess_control_fraction", "ess_treated_fraction", "brier_score"
+)], 8)
 ```
 
-    ##    treatment n_control n_treated prevalence overlap_ratio       auc brier_score
-    ## 19     Satb2       106        51  0.3248408     0.2388087 0.9076952   0.1158215
-    ## 12      Mbd5       106       119  0.5288889     0.3274140 0.8625337   0.1518109
-    ## 20    Scn2a1       106        93  0.4673367     0.3486508 0.8444918   0.1629961
-    ## 13    Med13l       106        75  0.4143646     0.3659119 0.8401258   0.1642948
-    ## 22     Setd5       106        71  0.4011299     0.3855966 0.8087962   0.1805291
-    ## 28     Upf3b       106       100  0.4854369     0.3898113 0.8479245   0.1590119
-    ## 3      Asxl3       106       130  0.5508475     0.3904209 0.8560232   0.1556060
-    ## 21     Setd2       106        76  0.4175824     0.4217974 0.7868669   0.1878223
-    ## 18    Qrich1       106        86  0.4479167     0.4589732 0.8094559   0.1813526
-    ## 29       Wac       106        85  0.4450262     0.4640400 0.7641509   0.1998440
-    ##    outside_overlap_fraction clipped_fraction ess_control ess_treated
-    ## 19              0.140127389                0    23.26139    26.51445
-    ## 12              0.053333333                0    27.72657    43.14009
-    ## 20              0.015075377                0    52.53817    42.72273
-    ## 13              0.022099448                0    65.90973    24.06093
-    ## 22              0.005649718                0    55.73538    29.62051
-    ## 28              0.024271845                0    60.87815    60.67224
-    ## 3               0.025423729                0    51.51359   102.36937
-    ## 21              0.010989011                0    51.74805    54.97803
-    ## 18              0.000000000                0    72.62433    47.30067
-    ## 29              0.000000000                0    66.27410    41.83878
-    ##    ess_control_fraction ess_treated_fraction   score_q01 score_median score_q99
-    ## 19            0.2194471            0.5198912 0.005015576    0.3313653 0.9509675
-    ## 12            0.2615714            0.3625218 0.027025725    0.5270169 0.9180425
-    ## 20            0.4956431            0.4593842 0.042570306    0.4874781 0.9134607
-    ## 13            0.6217899            0.3208124 0.043012888    0.4760133 0.9082600
-    ## 22            0.5258055            0.4171903 0.067022296    0.4470805 0.9269663
-    ## 28            0.5743222            0.6067224 0.031873028    0.4878085 0.8977650
-    ## 3             0.4859773            0.7874567 0.031346697    0.5379988 0.9047988
-    ## 21            0.4881891            0.7233951 0.054742236    0.4722173 0.9050784
-    ## 18            0.6851352            0.5500077 0.074137959    0.4962168 0.8494633
-    ## 29            0.6252274            0.4922210 0.079766804    0.4631510 0.8911626
+    ##    treatment n_treated overlap_ratio outside_overlap_fraction
+    ## 19     Satb2        51     0.1640770               0.14012739
+    ## 12      Mbd5       119     0.3033931               0.04888889
+    ## 13    Med13l        75     0.3132075               0.01657459
+    ## 28     Upf3b       100     0.3175472               0.02912621
+    ## 3      Asxl3       130     0.3194485               0.02966102
+    ## 20    Scn2a1        93     0.3337391               0.03015075
+    ## 21     Setd2        76     0.3354022               0.01098901
+    ## 18    Qrich1        86     0.3624397               0.00000000
+    ##    ess_control_fraction ess_treated_fraction brier_score
+    ## 19            0.3946076            0.7139198  0.09675578
+    ## 12            0.3652821            0.4446972  0.13498207
+    ## 13            0.6992941            0.4583922  0.14871990
+    ## 28            0.6397361            0.6988730  0.13530618
+    ## 3             0.5515826            0.8646044  0.13362776
+    ## 20            0.6435044            0.5700403  0.14795192
+    ## 21            0.5917089            0.7583063  0.17370167
+    ## 18            0.7610943            0.5734310  0.16965361
 
 ``` r
 weakest <- head(ps_summary$treatment, 4)
 propensity_plot <- causarray$plot_propensity_scores(
-  A, pi_oof, treatments = as.list(weakest)
+  A, pi_oof, treatments = as.list(weakest), clip_bounds = NULL
 )
 propensity_plot[[1]]$savefig(
   "perturbseq-r_files/figure-markdown_github/propensity-overlap-1.png",
@@ -369,79 +401,72 @@ knitr::asis_output(
 
 ![](perturbseq-r_files/figure-markdown_github/propensity-overlap-1.png)
 
-Satb2 has the weakest overlap. Its latent-factor diagnostics flag U9,
-while standardized log-library size is also strongly associated with
-this perturbation. We compare dropping U9 with retaining all covariates
-and applying ten times the ordinary L2 penalty to library size only.
-Each refit changes the Satb2 propensity model but preserves the other
-treatment score columns. We check out-of-fold overlap after refitting
-before reusing the primary fit’s cached outcome predictions for the
-effect sensitivity analyses.
+Satb2 has the weakest overlap: its latent-factor diagnostics flag U9,
+and standardized log-library size is strongly associated with it as
+well. Propensity scores are fit one treatment at a time against the
+shared controls, so you can change the model for Satb2 alone and leave
+the other 28 perturbations untouched. `refit_propensity_scores` refits
+only the treatments you name and returns an audit table next to the
+updated scores. Three alternatives:
+
+-   **drop U9** — remove the most imbalanced latent factor;
+-   **10x library penalty** — keep every covariate, but apply ten times
+    the usual L2 penalty to standardized log-library size;
+-   **Satb2 C=0.1** — keep every covariate and shrink all of them more
+    strongly.
+
+Out-of-fold scores drive the overlap diagnostics; the analysis scores
+then reuse the primary fit’s cached `Y_hat`, so no outcome model is
+refitted.
 
 ``` r
-drop_by_treatment <- list(Satb2 = "U9")
-library_penalty_factor <- 10
-library_penalties <- list(
-  Satb2 = list(log_library_size = library_penalty_factor)
-)
-
-oof_filtered <- causarray$refit_propensity_scores(
-  A, W_A,
-  drop_by_treatment = drop_by_treatment,
-  pi_hat = pi_oof,
-  covariate_names = propensity_names,
-  K = 5L, class_weight = "balanced", random_state = 0L
-)
-pi_oof_filtered <- oof_filtered[[1]]
-oof_filter_audit <- oof_filtered[[2]]
-
-oof_library_regularized <- causarray$refit_propensity_scores(
-  A, W_A,
-  pi_hat = pi_oof,
-  covariate_names = propensity_names,
-  penalty_factors_by_treatment = library_penalties,
-  K = 5L, class_weight = "balanced", random_state = 0L
-)
-pi_oof_library_regularized <- oof_library_regularized[[1]]
-library_regularization_audit <- oof_library_regularized[[2]]
-oof_filter_audit
-```
-
-    ##   treatment dropped_covariates
-    ## 1     Satb2                 U9
-    ##                                                retained_covariates
-    ## 1 intercept, log_library_size, U1, U2, U3, U4, U5, U6, U7, U8, U10
-    ##   penalty_factors n_retained
-    ## 1            NULL         11
-
-``` r
-library_regularization_audit
-```
-
-    ##   treatment dropped_covariates
-    ## 1     Satb2               NULL
-    ##                                                    retained_covariates
-    ## 1 intercept, log_library_size, U1, U2, U3, U4, U5, U6, U7, U8, U9, U10
-    ##   penalty_factors n_retained
-    ## 1              10         12
-
-``` r
-satb2_overlap <- rbind(
-  transform(
-    subset(causarray$summarize_propensity_scores(A, pi_oof),
-           treatment == "Satb2"),
-    model = "all factors"
+satb2_variants <- list(
+  `drop U9` = list(drop_by_treatment = list(Satb2 = "U9")),
+  `10x library penalty` = list(
+    penalty_factors_by_treatment = list(Satb2 = list(log_library_size = 10))
   ),
-  transform(
-    subset(causarray$summarize_propensity_scores(A, pi_oof_filtered),
-           treatment == "Satb2"),
-    model = "drop U9"
-  ),
-  transform(
-    subset(causarray$summarize_propensity_scores(
-             A, pi_oof_library_regularized), treatment == "Satb2"),
-    model = "10x library-size penalty"
+  `Satb2 C=0.1` = list(drop_by_treatment = list(Satb2 = list()), C = 0.1)
+)
+
+refit_satb2 <- function(pi_hat, K, options) {
+  do.call(causarray$refit_propensity_scores, c(
+    list(A, W_A, pi_hat = pi_hat, covariate_names = propensity_names,
+         K = K, class_weight = "balanced", random_state = 0L),
+    options
+  ))
+}
+
+# Out-of-fold scores drive the overlap diagnostics.
+oof_variants <- lapply(satb2_variants, function(options) {
+  refit_satb2(pi_oof, 5L, options)
+})
+
+do.call(rbind, lapply(names(oof_variants), function(name) {
+  audit <- oof_variants[[name]][[2]]
+  data.frame(
+    model = name,
+    n_retained = audit$n_retained,
+    degenerate_design = audit$degenerate_design,
+    score_std = round(audit$score_std, 3)
   )
+}))
+```
+
+    ##                 model n_retained degenerate_design score_std
+    ## 1             drop U9         11             FALSE     0.322
+    ## 2 10x library penalty         12             FALSE     0.237
+    ## 3         Satb2 C=0.1         12             FALSE     0.239
+
+``` r
+satb2_row <- function(scores, name) {
+  ps <- causarray$summarize_propensity_scores(A, scores, clip_bounds = NULL)
+  transform(subset(ps, treatment == "Satb2"), model = name)
+}
+satb2_overlap <- rbind(
+  satb2_row(pi_oof, "all factors"),
+  do.call(rbind, lapply(names(oof_variants), function(name) {
+    satb2_row(oof_variants[[name]][[1]], name)
+  }))
 )
 satb2_overlap[, c(
   "model", "overlap_ratio", "outside_overlap_fraction",
@@ -449,18 +474,21 @@ satb2_overlap[, c(
 )]
 ```
 
-    ##                        model overlap_ratio outside_overlap_fraction
-    ## 19               all factors     0.2388087               0.14012739
-    ## 191                  drop U9     0.1735109               0.11464968
-    ## 192 10x library-size penalty     0.3085461               0.02547771
+    ##                   model overlap_ratio outside_overlap_fraction
+    ## 19          all factors     0.1640770              0.140127389
+    ## 193             drop U9     0.1829449              0.133757962
+    ## 191 10x library penalty     0.2678505              0.019108280
+    ## 192         Satb2 C=0.1     0.2881983              0.006369427
     ##     ess_control_fraction ess_treated_fraction brier_score
-    ## 19             0.2194471            0.5198912   0.1158215
-    ## 191            0.2460715            0.5053637   0.1171930
-    ## 192            0.4868185            0.5954587   0.1465261
+    ## 19             0.3946076            0.7139198  0.09675578
+    ## 193            0.4025316            0.7118361  0.09634972
+    ## 191            0.7231968            0.7921308  0.13735058
+    ## 192            0.6265151            0.8133949  0.14627507
 
 ``` r
 regularized_plot <- causarray$plot_propensity_scores(
-  A, pi_oof_library_regularized, treatments = list("Satb2")
+  A, oof_variants[["10x library penalty"]][[1]],
+  treatments = list("Satb2"), clip_bounds = NULL
 )
 invisible(regularized_plot[[1]]$suptitle(
   "Satb2 after 10x library-size penalty", y = 1.02
@@ -477,103 +505,69 @@ knitr::asis_output(
 ![](perturbseq-r_files/figure-markdown_github/satb2-library-penalty-1.png)
 
 ``` r
-analysis_filtered <- causarray$refit_propensity_scores(
-  A, W_A,
-  drop_by_treatment = drop_by_treatment,
-  pi_hat = estimation[["pi_hat_raw"]],
-  covariate_names = propensity_names,
-  K = 1L, class_weight = "balanced", random_state = 0L
-)
-analysis_library_regularized <- causarray$refit_propensity_scores(
-  A, W_A,
-  pi_hat = estimation[["pi_hat_raw"]],
-  covariate_names = propensity_names,
-  penalty_factors_by_treatment = library_penalties,
-  K = 1L, class_weight = "balanced", random_state = 0L
-)
-
-filtered_fit <- causarray$LFC(
-  Y, cbind(X, U), A, W_A,
-  offset = offsets, usevar = "pooled",
-  Y_hat = estimation[["Y_hat"]], pi_hat = analysis_filtered[[1]]
-)
-library_regularized_fit <- causarray$LFC(
-  Y, cbind(X, U), A, W_A,
-  offset = offsets, usevar = "pooled",
-  Y_hat = estimation[["Y_hat"]],
-  pi_hat = analysis_library_regularized[[1]]
-)
-
+# Analysis scores reuse the cached outcome model, so no outcome model is refitted.
 satb2_all <- subset(
   df_res, trt == "Satb2", select = c(gene_names, tau, padj)
 )
 names(satb2_all)[-1] <- c("tau_all", "padj_all")
-satb2_filtered <- subset(
-  filtered_fit[[1]], trt == "Satb2",
-  select = c(gene_names, tau, padj)
-)
-names(satb2_filtered)[-1] <- c("tau_drop_u9", "padj_drop_u9")
-satb2_library <- subset(
-  library_regularized_fit[[1]], trt == "Satb2",
-  select = c(gene_names, tau, padj)
-)
-names(satb2_library)[-1] <- c(
-  "tau_library_penalty", "padj_library_penalty"
-)
-satb2_effects <- Reduce(
-  function(left, right) merge(left, right, by = "gene_names"),
-  list(satb2_all, satb2_filtered, satb2_library)
-)
-sensitivity_summary <- data.frame(
-  model = c("drop U9", "10x library-size penalty"),
-  effect_correlation = c(
-    cor(satb2_effects$tau_all, satb2_effects$tau_drop_u9),
-    cor(satb2_effects$tau_all, satb2_effects$tau_library_penalty)
-  ),
-  median_absolute_change = c(
-    median(abs(satb2_effects$tau_all - satb2_effects$tau_drop_u9)),
-    median(abs(satb2_effects$tau_all -
-                 satb2_effects$tau_library_penalty))
-  ),
-  discoveries = c(
-    sum(satb2_effects$padj_drop_u9 < 0.1, na.rm = TRUE),
-    sum(satb2_effects$padj_library_penalty < 0.1, na.rm = TRUE)
-  ),
-  discoveries_all = sum(satb2_effects$padj_all < 0.1, na.rm = TRUE)
-)
+
+sensitivity_summary <- do.call(rbind, lapply(names(satb2_variants), function(name) {
+  analysis <- refit_satb2(estimation[["pi_hat_raw"]], 1L, satb2_variants[[name]])
+  fit <- causarray$LFC(
+    Y, cbind(X, U), A, W_A,
+    offset = offsets, usevar = "pooled",
+    Y_hat = estimation[["Y_hat"]], pi_hat = analysis[[1]]
+  )
+  alternative <- subset(
+    fit[[1]], trt == "Satb2", select = c(gene_names, tau, padj)
+  )
+  merged <- merge(satb2_all, alternative, by = "gene_names")
+  data.frame(
+    model = name,
+    effect_correlation = cor(merged$tau_all, merged$tau),
+    median_absolute_change = median(abs(merged$tau_all - merged$tau)),
+    discoveries = sum(merged$padj < 0.1, na.rm = TRUE)
+  )
+}))
+sensitivity_summary$discoveries_all <- sum(satb2_all$padj_all < 0.1, na.rm = TRUE)
 sensitivity_summary
 ```
 
-    ##                      model effect_correlation median_absolute_change
-    ## 1                  drop U9          0.9978495             0.01127664
-    ## 2 10x library-size penalty          0.9851398             0.01772560
-    ##   discoveries discoveries_all
-    ## 1        1395            1404
-    ## 2        1351            1404
+    ##                 model effect_correlation median_absolute_change discoveries
+    ## 1             drop U9          0.9997653            0.004004453        1852
+    ## 2 10x library penalty          0.9966004            0.011748283        1775
+    ## 3         Satb2 C=0.1          0.9817849            0.024269803        1568
+    ##   discoveries_all
+    ## 1            1858
+    ## 2            1858
+    ## 3            1858
 
 ``` r
 baseline_overlap <- subset(satb2_overlap, model == "all factors")
-regularized_overlap <- subset(
-  satb2_overlap, model == "10x library-size penalty"
-)
-regularized_effects <- subset(
-  sensitivity_summary, model == "10x library-size penalty"
-)
+drop_overlap <- subset(satb2_overlap, model == "drop U9")
+penalty_overlap <- subset(satb2_overlap, model == "10x library penalty")
+ridge_overlap <- subset(satb2_overlap, model == "Satb2 C=0.1")
+drop_effects <- subset(sensitivity_summary, model == "drop U9")
+penalty_effects <- subset(sensitivity_summary, model == "10x library penalty")
+ridge_effects <- subset(sensitivity_summary, model == "Satb2 C=0.1")
 ```
 
-**Sensitivity interpretation.** Applying a 10-fold L2 penalty to library
-size alone raises Satb2’s overlap ratio from 0.239 to 0.309, reduces the
-fraction outside `[0.05, 0.95]` from 14.0% to 2.5%, and raises the
-control ESS fraction from 21.9% to 48.7%. Its out-of-fold Brier score
-changes from 0.116 to 0.147, indicating that the overlap gain reflects
-stronger smoothing rather than better out-of-fold propensity prediction.
-The corresponding effects remain highly similar overall (correlation
-0.985), and the change in discoveries from 1,404 to 1,351 is acceptable
-for this regularized sensitivity analysis rather than evidence of
-substantive instability. We retain the original propensity specification
-as the primary analysis and report both filtered specifications as
-sensitivities; neither establishes positivity that is absent in the
-data.
+**What the three variants show.** Dropping U9 barely moves anything:
+Satb2’s overlap ratio goes from 0.164 to 0.183 and the effects correlate
+at 1.000. The two shrinkage options buy real overlap — the 10x library
+penalty reaches 0.268 and lifts the control ESS fraction from 39.5% to
+72.3%, while `C = 0.1` reaches 0.288 with only 0.6% of scores left
+outside `[0.05, 0.95]`. Both cost calibration: the out-of-fold Brier
+score rises from 0.097 to 0.137 and 0.146, so the smoother scores are
+buying overlap with bias rather than predicting treatment better.
+
+Effects stay close throughout (correlation 0.997 and 0.982) while
+discoveries move from 1,858 to 1,775 and 1,568. Stable effects with
+gently falling power and worse calibration is what a well-behaved
+sensitivity analysis looks like. Report the variants alongside the
+primary fit so readers can see the spread — and if a conclusion holds
+under only one propensity specification, that is worth knowing before
+you rely on it.
 
 ``` r
 library(dplyr)

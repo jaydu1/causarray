@@ -105,10 +105,22 @@ Benjamini--Hochberg adjusted p-values. ``plot_treatment_associations`` displays
 either effect-size measure as a heatmap. These are descriptive diagnostics:
 there is deliberately no automatic threshold or drop decision.
 
+By default the adjustment pools every treatment-by-covariate test into one
+family, which with many perturbations is large and correspondingly
+conservative. Pass ``bh_scope='per_treatment'`` to adjust within each
+treatment's own block; the ``n_tests_in_family`` column records how many tests
+entered each row's correction either way. In the heatmap, ``spearman_rho`` uses
+a fixed ``(-1, 1)`` colour range so that panels stay comparable across subsets,
+while the unbounded standardized mean difference scales to the data; pass
+``vmax`` to set a symmetric limit explicitly.
+
 When a scientifically justified sensitivity analysis uses a different
 propensity design for each treatment, ``refit_propensity_scores`` accepts a
 treatment-specific mapping such as ``{'Satb2': ['U9']}``. Supplying existing
-raw scores refits only the named treatment columns and preserves all others.
+raw scores refits only the named treatment columns and carries the others over
+unchanged, up to the shared ``clip``, which is applied to the whole returned
+matrix so a single consistent bound reaches ``LFC``; pass ``clip=None`` to leave
+carried-over scores exactly as supplied.
 For logistic L2 propensity models, ``penalty_factors_by_treatment`` can instead
 retain a covariate while shrinking its coefficient more strongly. For example,
 ``{'Satb2': {'log_library_size': 10}}`` applies ten times the ordinary ridge
@@ -140,6 +152,14 @@ population and can omit a genuine measured confounder. Treat filtered fits as
 sensitivity analyses, distinguish pre-treatment covariates from possible
 post-treatment variables, and compare propensity overlap, effective sample
 sizes, and effect estimates before and after filtering.
+
+Filtering can go too far. If it leaves a constant design, the propensity model
+degenerates to a covariate-free constant and AIPW reduces to an unweighted
+contrast; ``refit_propensity_scores`` raises a ``RuntimeWarning`` and sets
+``degenerate_design`` in the returned audit table. A very large penalty factor
+shrinks a coefficient without making the design constant, so check
+``score_std`` in the same table: a value near zero means the scores carry
+almost no covariate information even though nothing was formally dropped.
 
 Post-hoc diagnostic masks
 -------------------------

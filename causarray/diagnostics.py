@@ -193,14 +193,15 @@ def _coerce_named_matrix(values, names, name, generated_prefix):
 
 def summarize_treatment_associations(
     A, Z, treatment_names=None, covariate_names=None, covariate_types=None,
+    bh_scope='global',
 ):
     """Summarize covariate association with each treatment.
 
     Each treatment is compared with shared all-zero controls; rows assigned to
-    other treatments are excluded. Spearman p-values are adjusted together
-    across all finite treatment-by-covariate tests using the Benjamini-Hochberg
-    procedure. The returned statistics are diagnostics and do not automatically
-    identify variables that should be removed from an adjustment set.
+    other treatments are excluded. Spearman p-values are adjusted with the
+    Benjamini-Hochberg procedure over the family selected by ``bh_scope``. The
+    returned statistics are diagnostics and do not automatically identify
+    variables that should be removed from an adjustment set.
 
     Parameters
     ----------
@@ -215,14 +216,26 @@ def summarize_treatment_associations(
     covariate_types : sequence, optional
         Labels such as ``'observed'`` and ``'latent'``. Defaults to
         ``'observed'`` for every column.
+    bh_scope : {'global', 'per_treatment'}, optional
+        Multiple-testing family. ``'global'`` (the default) adjusts across every
+        finite treatment-by-covariate test at once, which with many treatments
+        is a large and correspondingly conservative family.
+        ``'per_treatment'`` adjusts within each treatment's own block, which is
+        the right choice when each treatment is screened on its own.
 
     Returns
     -------
     summary : DataFrame
-        Long-form table containing ``spearman_rho``, ``pvalue``, globally
-        BH-adjusted ``padj``, and ``standardized_mean_difference`` for every
-        treatment-by-covariate pair.
+        Long-form table containing ``spearman_rho``, ``pvalue``, BH-adjusted
+        ``padj``, ``n_tests_in_family``, and ``standardized_mean_difference``
+        for every treatment-by-covariate pair. ``n_tests_in_family`` records how
+        many tests entered that row's adjustment, so the correction is
+        self-describing.
+
+    .. versionadded:: 0.0.9
     """
+    if bh_scope not in ('global', 'per_treatment'):
+        raise ValueError("bh_scope must be 'global' or 'per_treatment'")
     A, treatment_names = _coerce_named_matrix(
         A, treatment_names, 'treatment', 'treatment_',
     )
@@ -294,17 +307,28 @@ def summarize_treatment_associations(
             })
 
     summary = pd.DataFrame(rows)
+    summary['n_tests_in_family'] = 0
     finite = np.isfinite(summary['pvalue'].to_numpy())
-    if np.any(finite):
-        summary.loc[finite, 'padj'] = multipletests(
-            summary.loc[finite, 'pvalue'], method='fdr_bh',
-        )[1]
+    if bh_scope == 'global':
+        families = [np.ones(len(summary), dtype=bool)]
+    else:
+        families = [
+            (summary['treatment'] == treatment).to_numpy()
+            for treatment in treatment_names
+        ]
+    for family in families:
+        adjust = family & finite
+        summary.loc[family, 'n_tests_in_family'] = int(adjust.sum())
+        if np.any(adjust):
+            summary.loc[adjust, 'padj'] = multipletests(
+                summary.loc[adjust, 'pvalue'], method='fdr_bh',
+            )[1]
     return summary
 
 
 def plot_treatment_associations(
     summary, value='spearman_rho', treatments=None, covariates=None,
-    alpha=None, ax=None,
+    alpha=None, vmax=None, ax=None,
 ):
     """Plot a heatmap of treatment-by-covariate associations.
 
@@ -317,8 +341,14 @@ def plot_treatment_associations(
     treatments, covariates : sequence, optional
         Ordered subsets to display.
     alpha : float or None, optional
-        If provided, mark cells whose globally adjusted p-value is at most
-        ``alpha``. No significance threshold is applied by default.
+        If provided, mark cells whose adjusted p-value is at most ``alpha``. No
+        significance threshold is applied by default.
+    vmax : float or None, optional
+        Symmetric colour limit, so the heatmap spans ``(-vmax, vmax)``. When
+        omitted, ``'spearman_rho'`` uses the fixed range ``(-1, 1)`` given by
+        its natural bounds, which keeps panels comparable across subsets, while
+        the unbounded ``'standardized_mean_difference'`` scales to the largest
+        finite magnitude on display.
     ax : matplotlib Axes, optional
         Axes on which to draw the heatmap.
 
@@ -326,6 +356,8 @@ def plot_treatment_associations(
     -------
     fig, ax : matplotlib Figure and Axes
         The populated figure and axes.
+
+    .. versionadded:: 0.0.9
     """
     if value not in ('spearman_rho', 'standardized_mean_difference'):
         raise ValueError(
@@ -339,6 +371,8 @@ def plot_treatment_associations(
         raise ValueError(f'summary is missing required columns: {sorted(missing)}')
     if alpha is not None and not 0 < alpha <= 1:
         raise ValueError('alpha must be None or lie in (0, 1]')
+    if vmax is not None and not (np.isfinite(vmax) and vmax > 0):
+        raise ValueError('vmax must be None or a finite positive number')
 
     all_treatments = list(dict.fromkeys(summary['treatment']))
     all_covariates = list(dict.fromkeys(summary['covariate']))
@@ -374,10 +408,15 @@ def plot_treatment_associations(
     else:
         fig = ax.figure
     values = matrix.to_numpy(dtype=float)
-    finite_values = np.abs(values[np.isfinite(values)])
-    limit = float(np.max(finite_values)) if finite_values.size else 1.0
-    if limit == 0:
+    if vmax is not None:
+        limit = float(vmax)
+    elif value == 'spearman_rho':
         limit = 1.0
+    else:
+        finite_values = np.abs(values[np.isfinite(values)])
+        limit = float(np.max(finite_values)) if finite_values.size else 1.0
+        if limit == 0:
+            limit = 1.0
     image = ax.imshow(values, aspect='auto', cmap='coolwarm',
                       vmin=-limit, vmax=limit)
     ax.set_xticks(np.arange(len(covariates)))
@@ -440,6 +479,21 @@ def summarize_propensity_scores(
 
     Other perturbations are excluded from a treatment's diagnostic comparison;
     each row compares that treatment with shared all-zero controls.
+
+    Parameters
+    ----------
+    A, pi_hat, treatment_names, overlap_bounds, bins
+        Treatments, scores, labels, the reference overlap window, and the
+        histogram resolution used for ``overlap_ratio``.
+    clip_bounds : tuple(float, float) or None, optional
+        The bounds the caller **already applied** to ``pi_hat``, defaulting to
+        the ``LFC(ps_clip=(0.01, 0.99))`` default. ``clipped_fraction`` counts
+        scores sitting on those bounds. Pass ``None`` for raw, unclipped scores;
+        ``clipped_fraction`` is then ``NaN`` rather than a misleading ``0.0``,
+        since clipping cannot be inferred from the values alone.
+
+    .. versionchanged:: 0.0.9
+       ``clip_bounds=None`` reports ``NaN`` instead of ``0.0``.
     """
     A, pi_hat, treatment_names = _coerce_treatment_inputs(
         A, pi_hat, treatment_names)
@@ -471,9 +525,13 @@ def summarize_propensity_scores(
         eps = np.finfo(float).eps
         ess_ctrl = _effective_sample_size(1 / np.clip(1 - p_ctrl, eps, None))
         ess_case = _effective_sample_size(1 / np.clip(p_case, eps, None))
-        clipped = np.zeros(p.shape, dtype=bool)
-        if clip_bounds is not None:
-            clipped = np.isclose(p, clip_bounds[0]) | np.isclose(p, clip_bounds[1])
+        if clip_bounds is None:
+            clipped_fraction = np.nan
+        else:
+            clipped = (
+                np.isclose(p, clip_bounds[0]) | np.isclose(p, clip_bounds[1])
+            )
+            clipped_fraction = float(clipped.mean())
 
         rows.append({
             'treatment': name,
@@ -484,7 +542,7 @@ def summarize_propensity_scores(
             'auc': float(roc_auc_score(y, p)),
             'brier_score': float(brier_score_loss(y, p)),
             'outside_overlap_fraction': float(np.mean((p < lo) | (p > hi))),
-            'clipped_fraction': float(clipped.mean()),
+            'clipped_fraction': clipped_fraction,
             'ess_control': ess_ctrl,
             'ess_treated': ess_case,
             'ess_control_fraction': ess_ctrl / max(len(p_ctrl), 1),
@@ -498,14 +556,21 @@ def summarize_propensity_scores(
 
 def plot_propensity_scores(
     A, pi_hat, treatments=None, treatment_names=None, overlap_bounds=(0.05, 0.95),
-    bins=40, max_panels=4, axes=None,
+    bins=40, max_panels=4, axes=None, clip_bounds=(0.01, 0.99),
 ):
-    """Plot propensity distributions for treatment and control cells."""
+    """Plot propensity distributions for treatment and control cells.
+
+    ``clip_bounds`` is forwarded to :func:`summarize_propensity_scores` for the
+    returned summary; pass ``None`` when ``pi_hat`` holds raw, unclipped scores.
+
+    .. versionchanged:: 0.0.9
+       ``clip_bounds`` is no longer fixed at its default.
+    """
     A, pi_hat, treatment_names = _coerce_treatment_inputs(
         A, pi_hat, treatment_names)
     summary = summarize_propensity_scores(
         A, pi_hat, treatment_names=treatment_names,
-        overlap_bounds=overlap_bounds, bins=bins,
+        overlap_bounds=overlap_bounds, clip_bounds=clip_bounds, bins=bins,
     )
 
     if treatments is None:

@@ -131,3 +131,25 @@ def test_align_test_mask_does_not_modify_results():
     align_test_mask(results, frame)
 
     pd.testing.assert_frame_equal(results, original)
+
+
+def test_align_test_mask_scales_to_a_full_screen():
+    """Replogle-scale alignment: 200 x 8,563 tests in shuffled row order."""
+    rng = np.random.default_rng(0)
+    treatments = [f'pert_{i:03d}' for i in range(200)]
+    genes = [f'gene_{j:05d}' for j in range(8563)]
+    mask = rng.random((len(treatments), len(genes))) < 0.9
+
+    results = pd.DataFrame({
+        'trt': np.repeat(treatments, len(genes)),
+        'gene_names': np.tile(genes, len(treatments)),
+    })
+    order = rng.permutation(len(results))
+    shuffled = results.iloc[order].reset_index(drop=True)
+
+    aligned = align_test_mask(
+        shuffled, mask, treatment_names=treatments, gene_names=genes,
+    )
+
+    assert aligned.shape == (len(treatments) * len(genes),)
+    np.testing.assert_array_equal(aligned, mask.ravel()[order])

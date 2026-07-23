@@ -27,7 +27,7 @@ causarray is a Python module for simultaneous causal inference with an array of 
 
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
    :glob:
    :caption: Tutorials (Python)
 

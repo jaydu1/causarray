@@ -38,7 +38,12 @@ dependencies:
 
   - pip:
       - sklearn-ensemble-cv>=0.2.4
-      
+
+      # optional fast GLM backend; also provides the marginal Wilcoxon
+      # comparison used by the Replogle and Adamson tutorials
+      - crispyx
+
       # for development
       - build
+      - gprofiler-official  # GO enrichment in the Replogle tutorial
       - pyproject-hooks

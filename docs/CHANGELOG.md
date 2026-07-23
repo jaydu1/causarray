@@ -24,6 +24,39 @@
 - Public diagnostics are documented in the README and LFC API guide, including
   the distinction between post-hoc result annotation and formal refitting or
   multiple-testing changes.
+- `summarize_treatment_associations()` accepts `bh_scope='per_treatment'` to
+  adjust within each treatment instead of across the whole treatment-by-covariate
+  grid, and reports `n_tests_in_family` so the correction is self-describing.
+- `plot_treatment_associations()` accepts an explicit symmetric `vmax`.
+- `plot_propensity_scores()` accepts and forwards `clip_bounds`, which was
+  previously fixed at its default in the summary it returns.
+- `refit_propensity_scores()` reports `degenerate_design` and `score_std` per
+  refitted treatment.
+
+### Fixed
+
+- `refit_propensity_scores()` documented that carried-over score columns are
+  preserved *exactly*, while `clip` was in fact applied to the whole returned
+  matrix. The uniform behaviour is kept, since `LFC` consumes a single bound,
+  but it is now stated and covered by a test. Pass `clip=None` to leave
+  carried-over scores untouched.
+- `refit_propensity_scores()` now warns when covariate filtering leaves a
+  constant design, which previously collapsed to a covariate-free `0.5` score
+  in silence and quietly turned AIPW into an unweighted contrast.
+- A scalar `clip` raised `TypeError: object of type 'float' has no len()`
+  instead of the documented `ValueError` in `estimate_propensity_scores()` and
+  `refit_propensity_scores()`.
+- `plot_treatment_associations()` scaled the colour bar to the largest observed
+  magnitude even for `spearman_rho`, which is bounded in [-1, 1]. Tiny
+  correlations rendered as fully saturated and panels were not comparable
+  across subsets; bounded statistics now use a fixed `(-1, 1)` range.
+- `summarize_propensity_scores()` reported `clipped_fraction = 0.0` for raw
+  scores by inferring clipping from a default `clip_bounds` the caller may
+  never have applied. `clip_bounds=None` now yields `NaN`.
+- The Replogle propensity cache script derived log-library size from raw counts
+  while `prep_causarray_data` derives it from capped counts, so its design
+  matrix did not match the tutorial's. The script now caps first and asserts
+  the preprocessing contract before fitting.
 
 ## [0.0.8] - 2026-07-20
 

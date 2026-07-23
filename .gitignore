@@ -184,6 +184,8 @@ docs/source/tutorial/replogle/replogle_subset.h5ad
 docs/source/tutorial/replogle/replogle_subset_norm*.h5ad
 docs/source/tutorial/replogle/replogle_normed.h5ad
 docs/source/tutorial/replogle/replogle_results.h5
+docs/source/tutorial/replogle/replogle_supt5h_go_*.csv
+docs/source/tutorial/replogle/replogle_propensity_batch12*
 
 # Unrelated tutorial directory (not part of causarray package docs)
 docs/source/tutorial/scp/

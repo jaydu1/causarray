@@ -42,6 +42,27 @@ def _get_func_ps(ps_model, **kwargs):
     return func_ps, params_ps
 
 
+def _validate_clip(clip):
+    """Validate a propensity clipping bound and return it as ``(lower, upper)``.
+
+    Raises
+    ------
+    ValueError
+        If ``clip`` is not a pair of numbers satisfying
+        ``0 <= lower < upper <= 1``.
+    """
+    message = 'clip must be None or a pair 0 <= lower < upper <= 1'
+    if isinstance(clip, (str, bytes)) or np.ndim(clip) != 1:
+        raise ValueError(message)
+    try:
+        lower, upper = (float(bound) for bound in clip)
+    except (TypeError, ValueError):
+        raise ValueError(message) from None
+    if not 0 <= lower < upper <= 1:
+        raise ValueError(message)
+    return lower, upper
+
+
 def estimate_propensity_scores(
     A, X_A, K=1, ps_model='logistic', mask=None, clip=None,
     random_state=0, verbose=False, class_weight='balanced', **kwargs,
@@ -174,9 +195,8 @@ def estimate_propensity_scores(
                 pi_hat[test_index, j] = func_ps(x_train, y_train, XA_test)
 
     if clip is not None:
-        if len(clip) != 2 or not 0 <= clip[0] < clip[1] <= 1:
-            raise ValueError('clip must be None or a pair 0 <= lower < upper <= 1')
-        pi_hat = np.clip(pi_hat, clip[0], clip[1])
+        lower, upper = _validate_clip(clip)
+        pi_hat = np.clip(pi_hat, lower, upper)
     return pi_hat
 
 
@@ -192,8 +212,9 @@ def refit_propensity_scores(
     omit different observed covariates or latent factors, or apply stronger L2
     regularization to selected covariates. When existing scores are supplied,
     only treatments named in either treatment-specific mapping are refitted;
-    the remaining columns are preserved exactly. Outcome models are not fit by
-    this function and cached ``Y_hat`` values can be reused in :func:`LFC`.
+    the remaining columns are carried over from ``pi_hat`` unchanged, up to the
+    shared ``clip`` described below. Outcome models are not fit by this function
+    and cached ``Y_hat`` values can be reused in :func:`LFC`.
 
     Parameters
     ----------
@@ -217,15 +238,38 @@ def refit_propensity_scores(
         available only for ``ps_model='logistic'`` with an L2 penalty. A factor
         of one leaves the covariate unchanged. Interpret relative penalties on
         a common scale; ``prep_causarray_data`` standardizes log-library size.
-    K, ps_model, mask, clip, random_state, verbose, class_weight, **kwargs
+    K, ps_model, mask, random_state, verbose, class_weight, **kwargs
         Passed to :func:`estimate_propensity_scores` for each refitted model.
+    clip : tuple(float, float) or None, optional
+        Bounds applied to the **whole** returned matrix, refitted columns and
+        carried-over columns alike, so that a single consistent bound reaches
+        :func:`LFC`. Pass ``None`` to leave carried-over scores exactly as
+        supplied.
 
     Returns
     -------
     pi_updated : ndarray, shape (n, a)
         Updated propensity scores.
     report : DataFrame
-        Audit table of refitted treatments and retained/dropped covariates.
+        Audit table of refitted treatments, retained/dropped covariates, and
+        the resulting score spread. ``degenerate_design`` flags a treatment
+        whose retained design is constant, and ``score_std`` reports the
+        standard deviation of its refitted scores on eligible rows; both make a
+        collapsed propensity model visible without reading the warning stream.
+
+    Warns
+    -----
+    RuntimeWarning
+        If filtering leaves a constant design for some treatment, in which case
+        its scores carry no covariate information.
+
+    Notes
+    -----
+    A very large penalty factor shrinks a coefficient towards zero without
+    making the design constant. That case leaves ``degenerate_design`` False
+    but drives ``score_std`` towards zero.
+
+    .. versionadded:: 0.0.9
     """
     if drop_by_treatment is None:
         drop_by_treatment = {}
@@ -387,6 +431,14 @@ def refit_propensity_scores(
         for position, k in enumerate(retained):
             factor = treatment_penalties.get(k, 1.0)
             X_treatment[:, position] /= np.sqrt(factor)
+        degenerate = bool(np.all(np.ptp(X_treatment[eligible], axis=0) == 0))
+        if degenerate:
+            warnings.warn(
+                f'The propensity design for treatment {treatment_names[j]} is '
+                'constant after filtering; its scores fall back to a '
+                'class-weighted prevalence and carry no covariate information.',
+                RuntimeWarning, stacklevel=2,
+            )
         scores = estimate_propensity_scores(
             A_array[:, [j]], X_treatment, K=K,
             ps_model=ps_model, mask=eligible[:, None], clip=None,
@@ -403,15 +455,16 @@ def refit_propensity_scores(
                 for k in retained if treatment_penalties.get(k, 1.0) != 1.0
             },
             'n_retained': len(retained),
+            'degenerate_design': degenerate,
+            'score_std': float(np.std(scores[eligible, 0])),
         })
 
     if clip is not None:
-        if len(clip) != 2 or not 0 <= clip[0] < clip[1] <= 1:
-            raise ValueError('clip must be None or a pair 0 <= lower < upper <= 1')
-        pi_updated = np.clip(pi_updated, clip[0], clip[1])
+        lower, upper = _validate_clip(clip)
+        pi_updated = np.clip(pi_updated, lower, upper)
     report = pd.DataFrame(rows, columns=[
         'treatment', 'dropped_covariates', 'retained_covariates',
-        'penalty_factors', 'n_retained',
+        'penalty_factors', 'n_retained', 'degenerate_design', 'score_std',
     ])
     return pi_updated, report
 
